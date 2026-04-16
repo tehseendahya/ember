@@ -61,6 +61,14 @@ interface GoogleCalendarEvent {
   summary?: string;
   description?: string;
   htmlLink?: string;
+  attendees?: Array<{
+    email?: string;
+    displayName?: string;
+    self?: boolean;
+    organizer?: boolean;
+    resource?: boolean;
+    responseStatus?: string;
+  }>;
   start?: { date?: string; dateTime?: string };
   end?: { date?: string; dateTime?: string };
   status?: string;
@@ -239,6 +247,66 @@ function toReminderText(event: GoogleCalendarEvent): string {
   return "Calendar event follow-up";
 }
 
+function looksLikePersonName(value: string): boolean {
+  const v = value.trim();
+  if (!v) return false;
+  if (v.length < 3 || v.length > 60) return false;
+  if (/@/.test(v)) return false;
+  const blocked = /(birthday|holiday|ooo|out of office|focus time|gym|workout|commute|travel|dentist|doctor|flight|pickup|dropoff|lunch|dinner|breakfast|standup|sync|retro|planning|all hands|town hall)/i;
+  if (blocked.test(v)) return false;
+  return /^[A-Z][a-z]+(?:\s+[A-Z][a-z.'-]+){1,2}$/.test(v);
+}
+
+function nameFromEmail(email: string): string {
+  const local = email.split("@")[0] ?? "";
+  const cleaned = local.replace(/[._-]+/g, " ").trim();
+  if (!cleaned) return "";
+  return cleaned
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+type EventParticipant = { name: string; email: string | null };
+
+function extractParticipants(event: GoogleCalendarEvent): EventParticipant[] {
+  const participants: EventParticipant[] = [];
+  const seen = new Set<string>();
+  for (const attendee of event.attendees ?? []) {
+    if (attendee.self || attendee.resource) continue;
+    const email = attendee.email?.trim().toLowerCase() ?? "";
+    if (email && /@(group\.calendar\.google\.com|resource\.calendar\.google\.com)$/.test(email)) continue;
+    const displayName = attendee.displayName?.trim() ?? "";
+    const nameCandidate = displayName || (email ? nameFromEmail(email) : "");
+    if (!looksLikePersonName(nameCandidate)) continue;
+    const key = email || nameCandidate.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    participants.push({ name: nameCandidate, email: email || null });
+  }
+  if (participants.length > 0) return participants;
+
+  const summary = event.summary?.trim() ?? "";
+  const summaryMatch = summary.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z.'-]+){1,2}\b/g) ?? [];
+  for (const candidate of summaryMatch) {
+    if (!looksLikePersonName(candidate)) continue;
+    const key = candidate.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    participants.push({ name: candidate, email: null });
+  }
+  return participants;
+}
+
+function isLikelyPeopleMeeting(event: GoogleCalendarEvent): boolean {
+  if (!event.start?.dateTime) return false; // skip all-day blocks
+  const participants = extractParticipants(event);
+  if (participants.length > 0) return true;
+  const summary = event.summary?.trim() ?? "";
+  return /\b(1:1|coffee|lunch|dinner|meet|intro)\b/i.test(summary);
+}
+
 export async function getGoogleIntegrationStatus(): Promise<GoogleIntegrationStatus> {
   const missingConfig = getMissingConfig();
   const userId = await requireUserId();
@@ -355,11 +423,23 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
   const payload = (await res.json()) as { items?: GoogleCalendarEvent[] };
   const events = (payload.items ?? []).filter((event) => event.status !== "cancelled");
   const supabase = await createSupabaseServerClient();
-  const { data: existingReminders } = await supabase
+  await supabase
     .from("reminders")
-    .select("*")
+    .delete()
     .eq("user_id", userId)
     .eq("source", "google_calendar");
+
+  const [{ data: existingReminders }, { data: contacts }] = await Promise.all([
+    supabase.from("reminders").select("*").eq("user_id", userId).eq("source", "google_calendar"),
+    supabase.from("contacts").select("*").eq("user_id", userId),
+  ]);
+
+  const contactsByEmail = new Map<string, { id: string; name: string }>();
+  const contactsByName = new Map<string, { id: string; name: string }>();
+  for (const c of contacts ?? []) {
+    if (c.email) contactsByEmail.set(c.email.toLowerCase(), { id: c.id, name: c.name });
+    contactsByName.set(c.name.trim().toLowerCase(), { id: c.id, name: c.name });
+  }
 
   let addedReminders = 0;
   let updatedReminders = 0;
@@ -367,40 +447,151 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
 
   for (const event of events) {
     const date = eventDate(event);
-    if (!date || !event.id) {
+    if (!date || !event.id || !isLikelyPeopleMeeting(event)) {
       skippedEvents++;
       continue;
     }
-    const text = toReminderText(event);
-    const existing = (existingReminders ?? []).find(
-      (reminder) => reminder.source === "google_calendar" && reminder.external_event_id === event.id,
-    );
-    if (existing) {
-      await supabase
-        .from("reminders")
-        .update({
+    const participants = extractParticipants(event);
+    const title = event.summary?.trim() || "Calendar meeting";
+    const interactionNotes = `Synced from Google Calendar${event.htmlLink ? ` (${event.htmlLink})` : ""}`;
+
+    if (participants.length === 0) {
+      const existing = (existingReminders ?? []).find(
+        (reminder) => reminder.source === "google_calendar" && reminder.external_event_id === event.id,
+      );
+      const text = toReminderText(event);
+      if (existing) {
+        await supabase
+          .from("reminders")
+          .update({
+            date,
+            text,
+            external_url: event.htmlLink ?? existing.external_url ?? null,
+            done: false,
+          })
+          .eq("id", existing.id)
+          .eq("user_id", userId);
+        updatedReminders++;
+      } else {
+        await supabase.from("reminders").insert({
+          id: randomUUID(),
+          user_id: userId,
+          contact_id: null,
           date,
           text,
-          external_url: event.htmlLink ?? existing.external_url ?? null,
           done: false,
-        })
-        .eq("id", existing.id)
-        .eq("user_id", userId);
-      updatedReminders++;
+          source: "google_calendar",
+          external_event_id: event.id,
+          external_url: event.htmlLink ?? null,
+        });
+        addedReminders++;
+      }
       continue;
     }
-    await supabase.from("reminders").insert({
-      id: randomUUID(),
-      user_id: userId,
-      contact_id: null,
-      date,
-      text,
-      done: false,
-      source: "google_calendar",
-      external_event_id: event.id,
-      external_url: event.htmlLink ?? null,
-    });
-    addedReminders++;
+
+    for (const participant of participants) {
+      const normalizedName = participant.name.trim().toLowerCase();
+      const contactMatch =
+        (participant.email ? contactsByEmail.get(participant.email) : null) ??
+        contactsByName.get(normalizedName) ??
+        null;
+
+      let contactId = contactMatch?.id ?? null;
+      if (!contactId) {
+        contactId = randomUUID();
+        const avatar = participant.name
+          .split(" ")
+          .filter(Boolean)
+          .slice(0, 2)
+          .map((p) => p[0]?.toUpperCase() ?? "")
+          .join("") || "?";
+        await supabase.from("contacts").insert({
+          id: contactId,
+          user_id: userId,
+          name: participant.name,
+          email: participant.email ?? "",
+          company: "",
+          role: "",
+          linkedin: "",
+          avatar,
+          avatar_color: "#60a5fa",
+          tags: ["google-calendar"],
+          last_contact_type: "meeting",
+          last_contact_date: date,
+          last_contact_description: title,
+          notes: "",
+          connection_strength: 2,
+          mutual_connections: [],
+        });
+        if (participant.email) contactsByEmail.set(participant.email, { id: contactId, name: participant.name });
+        contactsByName.set(normalizedName, { id: contactId, name: participant.name });
+      } else {
+        await supabase
+          .from("contacts")
+          .update({
+            last_contact_type: "meeting",
+            last_contact_date: date,
+            last_contact_description: title,
+          })
+          .eq("id", contactId)
+          .eq("user_id", userId);
+      }
+
+      const { data: existingInteraction } = await supabase
+        .from("interactions")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("contact_id", contactId)
+        .eq("date", date)
+        .eq("type", "meeting")
+        .eq("title", title)
+        .maybeSingle();
+      if (!existingInteraction) {
+        await supabase.from("interactions").insert({
+          id: randomUUID(),
+          user_id: userId,
+          contact_id: contactId,
+          date,
+          type: "meeting",
+          title,
+          notes: interactionNotes,
+          reminder: null,
+        });
+      }
+
+      const reminderKey = participant.email ? `${event.id}:${participant.email}` : `${event.id}:${normalizedName}`;
+      const existing = (existingReminders ?? []).find(
+        (reminder) => reminder.source === "google_calendar" && reminder.external_event_id === reminderKey,
+      );
+      const text = `Follow up with ${participant.name}: ${title}`;
+      if (existing) {
+        await supabase
+          .from("reminders")
+          .update({
+            contact_id: contactId,
+            date,
+            text,
+            external_url: event.htmlLink ?? existing.external_url ?? null,
+            done: false,
+          })
+          .eq("id", existing.id)
+          .eq("user_id", userId);
+        updatedReminders++;
+      } else {
+        await supabase.from("reminders").insert({
+          id: randomUUID(),
+          user_id: userId,
+          contact_id: contactId,
+          date,
+          text,
+          done: false,
+          source: "google_calendar",
+          external_event_id: reminderKey,
+          external_url: event.htmlLink ?? null,
+        });
+        addedReminders++;
+      }
+    }
   }
 
   await supabase.from("recent_updates").insert({
