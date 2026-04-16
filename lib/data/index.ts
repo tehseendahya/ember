@@ -23,10 +23,11 @@ export type {
   WorldSearchResult,
 } from "@/lib/types";
 
-export type { AddSecondDegreeEdgeInput, ApplyPayload, TodayData } from "./store/supabase-store";
+export type { AddContactInteractionInput, AddSecondDegreeEdgeInput, ApplyPayload, TodayData } from "./store/supabase-store";
 
 export {
   addSecondDegreeEdge,
+  addContactInteraction,
   applyCrmUpdate,
   buildExtendedConnectionsMap,
   completeReminder,

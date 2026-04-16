@@ -270,31 +270,120 @@ function nameFromEmail(email: string): string {
 
 type EventParticipant = { name: string; email: string | null };
 
+const MEETING_PREFIXES = [
+  "call",
+  "meeting",
+  "sync",
+  "chat",
+  "intro",
+  "catchup",
+  "catch-up",
+  "coffee",
+  "lunch",
+  "dinner",
+  "standup",
+  "1:1",
+];
+
+function normalizePersonCandidate(value: string): string {
+  const raw = value
+    .replace(/[()[\]{}]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!raw) return "";
+  const lower = raw.toLowerCase();
+  for (const prefix of MEETING_PREFIXES) {
+    const pref = `${prefix} `;
+    if (lower.startsWith(pref)) {
+      return raw.slice(pref.length).trim();
+    }
+  }
+  return raw;
+}
+
+function isLikelyCompanyPhrase(value: string): boolean {
+  return /\b(inc|llc|ltd|corp|company|health|labs|technologies|partners|capital|ventures)\b/i.test(value);
+}
+
+function titleCaseWords(value: string): string {
+  return value
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function isLikelyHumanEmail(email: string): boolean {
+  const local = email.split("@")[0] ?? "";
+  if (!local) return false;
+  if (/(no-?reply|notifications?|calendar|team|support|help|info|hello|admin)/i.test(local)) return false;
+  return true;
+}
+
+function looksLikePersonNameFlexible(value: string, allowSingleToken: boolean): boolean {
+  const normalized = normalizePersonCandidate(value);
+  if (!normalized) return false;
+  if (isLikelyCompanyPhrase(normalized)) return false;
+  const parts = normalized.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return false;
+  if (!allowSingleToken && parts.length < 2) return false;
+  if (parts.length > 3) return false;
+  return parts.every((part) => /^[A-Za-z][A-Za-z.'-]*$/.test(part));
+}
+
+function extractNameFromSummary(summary: string): string {
+  const normalized = summary.replace(/[-–:|]/g, " ").replace(/\s+/g, " ").trim();
+  const withPattern = normalized.match(/\b(?:with|w\/)\s+([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){0,2})\b/i);
+  if (withPattern?.[1]) {
+    const candidate = normalizePersonCandidate(withPattern[1]);
+    if (looksLikePersonNameFlexible(candidate, true)) return titleCaseWords(candidate);
+  }
+  for (const prefix of MEETING_PREFIXES) {
+    const rx = new RegExp(`\\b${prefix}\\s+([A-Za-z][A-Za-z.'-]*(?:\\s+[A-Za-z][A-Za-z.'-]*){0,2})\\b`, "i");
+    const m = normalized.match(rx);
+    if (m?.[1]) {
+      const candidate = normalizePersonCandidate(m[1]);
+      if (looksLikePersonNameFlexible(candidate, true)) return titleCaseWords(candidate);
+    }
+  }
+  return "";
+}
+
 function extractParticipants(event: GoogleCalendarEvent): EventParticipant[] {
   const participants: EventParticipant[] = [];
   const seen = new Set<string>();
+  const summary = event.summary?.trim() ?? "";
+
   for (const attendee of event.attendees ?? []) {
     if (attendee.self || attendee.resource) continue;
     const email = attendee.email?.trim().toLowerCase() ?? "";
     if (email && /@(group\.calendar\.google\.com|resource\.calendar\.google\.com)$/.test(email)) continue;
-    const displayName = attendee.displayName?.trim() ?? "";
-    const nameCandidate = displayName || (email ? nameFromEmail(email) : "");
-    if (!looksLikePersonName(nameCandidate)) continue;
-    const key = email || nameCandidate.toLowerCase();
+
+    const displayName = normalizePersonCandidate(attendee.displayName?.trim() ?? "");
+    const emailNameRaw = email ? nameFromEmail(email) : "";
+    const emailName = normalizePersonCandidate(emailNameRaw);
+
+    let selectedName = "";
+    if (email && isLikelyHumanEmail(email) && looksLikePersonNameFlexible(emailName, true)) {
+      selectedName = titleCaseWords(emailName);
+    } else if (looksLikePersonNameFlexible(displayName, true)) {
+      selectedName = titleCaseWords(displayName);
+    } else if (summary) {
+      const fromSummary = extractNameFromSummary(summary);
+      if (fromSummary) selectedName = fromSummary;
+    }
+
+    if (!selectedName) continue;
+    const key = email || selectedName.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    participants.push({ name: nameCandidate, email: email || null });
+    participants.push({ name: selectedName, email: email || null });
   }
   if (participants.length > 0) return participants;
 
-  const summary = event.summary?.trim() ?? "";
-  const summaryMatch = summary.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z.'-]+){1,2}\b/g) ?? [];
-  for (const candidate of summaryMatch) {
-    if (!looksLikePersonName(candidate)) continue;
-    const key = candidate.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    participants.push({ name: candidate, email: null });
+  const fromSummary = extractNameFromSummary(summary);
+  if (fromSummary) {
+    participants.push({ name: fromSummary, email: null });
   }
   return participants;
 }

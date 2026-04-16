@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import {
   Search,
@@ -12,6 +12,8 @@ import {
   Zap,
   ExternalLink,
   Loader2,
+  Mic,
+  MicOff,
 } from "lucide-react";
 import type { Contact, WorldSearchResult } from "@/lib/types";
 import IntroRequestModal from "@/components/IntroRequestModal";
@@ -26,6 +28,9 @@ const exampleSearches = [
 ];
 
 type NetworkHit = { contact: Contact; relevance: number; reason: string };
+type WebkitWindow = Window & {
+  webkitSpeechRecognition?: new () => SpeechRecognition;
+};
 
 export default function SearchClient({ contacts }: { contacts: Contact[] }) {
   const [mode, setMode] = useState<"network" | "world">("network");
@@ -34,6 +39,11 @@ export default function SearchClient({ contacts }: { contacts: Contact[] }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [isListening, setIsListening] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const shouldKeepListeningRef = useRef(false);
+  const shouldRestartRef = useRef(true);
 
   const [networkResults, setNetworkResults] = useState<NetworkHit[]>([]);
   const [worldResults, setWorldResults] = useState<WorldSearchResult[]>([]);
@@ -105,6 +115,77 @@ export default function SearchClient({ contacts }: { contacts: Contact[] }) {
   };
 
   const worldWithIntros = worldResults.filter((r) => r.introducers && r.introducers.length > 0);
+
+  const startVoiceTyping = () => {
+    if (typeof window === "undefined") return;
+
+    const SpeechRecognitionCtor = (window as WebkitWindow).webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      setVoiceError("Voice typing is not supported in this browser.");
+      return;
+    }
+
+    shouldKeepListeningRef.current = true;
+    shouldRestartRef.current = true;
+    setVoiceError(null);
+
+    const recognition = new SpeechRecognitionCtor();
+    recognitionRef.current = recognition;
+    recognition.lang = "en-US";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    recognition.onstart = () => {
+      setIsListening(true);
+    };
+    recognition.onresult = (event) => {
+      const text = Array.from(event.results)
+        .slice(event.resultIndex)
+        .filter((result) => result.isFinal)
+        .map((result) => result[0]?.transcript ?? "")
+        .join(" ")
+        .trim();
+      if (!text) return;
+      setQuery((prev) => (prev.trim() ? `${prev.trimEnd()} ${text}` : text));
+    };
+    recognition.onerror = (event) => {
+      if (event.error === "not-allowed" || event.error === "service-not-allowed" || event.error === "audio-capture") {
+        shouldKeepListeningRef.current = false;
+        shouldRestartRef.current = false;
+        setVoiceError("Mic permission or audio device issue. Check browser microphone access.");
+        return;
+      }
+      if (event.error !== "aborted" && event.error !== "no-speech") {
+        setVoiceError("Voice typing hiccuped and will retry.");
+      }
+    };
+    recognition.onend = () => {
+      if (!shouldKeepListeningRef.current || !shouldRestartRef.current) {
+        setIsListening(false);
+        recognitionRef.current = null;
+        return;
+      }
+      setTimeout(() => {
+        if (!shouldKeepListeningRef.current || !recognitionRef.current) return;
+        try {
+          recognitionRef.current.start();
+        } catch {
+          setVoiceError("Voice typing stopped unexpectedly. Tap mic to restart.");
+          shouldKeepListeningRef.current = false;
+          setIsListening(false);
+          recognitionRef.current = null;
+        }
+      }, 200);
+    };
+    recognition.start();
+  };
+
+  const stopVoiceTyping = () => {
+    shouldKeepListeningRef.current = false;
+    shouldRestartRef.current = false;
+    recognitionRef.current?.stop();
+    setIsListening(false);
+  };
 
   return (
     <div className="search-container" style={{ padding: "32px 40px", maxWidth: "1200px" }}>
@@ -207,6 +288,35 @@ export default function SearchClient({ contacts }: { contacts: Contact[] }) {
             }}
           />
           <button
+            type="button"
+            onClick={() => {
+              if (isListening) {
+                stopVoiceTyping();
+                return;
+              }
+              startVoiceTyping();
+            }}
+            title={isListening ? "Stop voice typing" : "Start voice typing"}
+            style={{
+              position: "absolute",
+              right: "84px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              width: "30px",
+              height: "30px",
+              borderRadius: "6px",
+              border: "1px solid #e5e7eb",
+              background: isListening ? "rgba(79, 70, 229, 0.1)" : "#fff",
+              color: isListening ? "#4f46e5" : "#6b7280",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+            }}
+          >
+            {isListening ? <MicOff size={14} /> : <Mic size={14} />}
+          </button>
+          <button
             type="submit"
             disabled={loading}
             style={{
@@ -228,6 +338,11 @@ export default function SearchClient({ contacts }: { contacts: Contact[] }) {
             {loading ? "…" : "Search"}
           </button>
         </div>
+        {voiceError && (
+          <div style={{ marginTop: "8px", fontSize: "12px", color: "#dc2626" }}>
+            {voiceError}
+          </div>
+        )}
       </form>
 
       {!hasSearched && (

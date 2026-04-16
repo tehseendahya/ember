@@ -56,6 +56,8 @@ export default function ContactCard({ contact }: ContactCardProps) {
           transition: "all 0.2s ease",
           position: "relative",
           overflow: "hidden",
+          width: "100%",
+          boxSizing: "border-box",
         }}
         onMouseEnter={(e) => {
           const el = e.currentTarget;
@@ -74,7 +76,7 @@ export default function ContactCard({ contact }: ContactCardProps) {
         }}
       >
         {/* Header: Avatar + Name */}
-        <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "14px" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "14px", minWidth: 0 }}>
           <div
             style={{
               width: "44px",
@@ -100,9 +102,8 @@ export default function ContactCard({ contact }: ContactCardProps) {
                 fontWeight: "600",
                 color: "#111827",
                 marginBottom: "2px",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
+                lineHeight: 1.35,
+                overflowWrap: "anywhere",
               }}
             >
               {contact.name}
@@ -111,9 +112,8 @@ export default function ContactCard({ contact }: ContactCardProps) {
               style={{
                 fontSize: "12px",
                 color: "#6b7280",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
+                lineHeight: 1.35,
+                overflowWrap: "anywhere",
               }}
             >
               {contact.role} @ {contact.company}
@@ -161,8 +161,10 @@ export default function ContactCard({ contact }: ContactCardProps) {
               color: "#6b7280",
               flex: 1,
               overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              overflowWrap: "anywhere",
             }}
           >
             {contact.lastContact.description}

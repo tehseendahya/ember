@@ -565,6 +565,7 @@ export default function ContactDetailClient({
   allContacts: Contact[];
   secondDegreeEdges: SecondDegreeEdge[];
 }) {
+  const router = useRouter();
   const borderColor = strengthColors[contact.connectionStrength] || "#9ca3af";
   const mutualContacts = contact.mutualConnections
     .map((mid) => allContacts.find((c) => c.id === mid))
@@ -575,6 +576,48 @@ export default function ContactDetailClient({
   const sortedInteractions = [...contact.interactions].sort(
     (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
   );
+  const [noteType, setNoteType] = useState<Interaction["type"]>("meeting");
+  const [noteTitle, setNoteTitle] = useState("");
+  const [noteBody, setNoteBody] = useState("");
+  const [noteDate, setNoteDate] = useState(new Date().toISOString().slice(0, 10));
+  const [savingNote, setSavingNote] = useState(false);
+  const [noteMessage, setNoteMessage] = useState<string | null>(null);
+
+  async function saveInteractionNote() {
+    if (!noteBody.trim()) {
+      setNoteMessage("Paste some notes first.");
+      return;
+    }
+    setSavingNote(true);
+    setNoteMessage(null);
+    try {
+      const res = await fetch("/api/crm/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "add_interaction",
+          contactId: contact.id,
+          type: noteType,
+          title: noteTitle.trim(),
+          notes: noteBody.trim(),
+          date: noteDate,
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || data.ok === false) {
+        setNoteMessage(data.error ?? "Could not save note.");
+        return;
+      }
+      setNoteBody("");
+      setNoteTitle("");
+      setNoteMessage("Saved interaction note.");
+      router.refresh();
+    } catch {
+      setNoteMessage("Could not save note.");
+    } finally {
+      setSavingNote(false);
+    }
+  }
 
   return (
     <div className="detail-container" style={{ padding: "32px 40px", maxWidth: "1200px" }}>
@@ -786,7 +829,7 @@ export default function ContactDetailClient({
       <div className="detail-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1.6fr", gap: "24px" }}>
         {/* Left Column */}
         <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          {/* Notes */}
+          {/* Event Notes */}
           <div
             style={{
               background: "#ffffff",
@@ -805,11 +848,59 @@ export default function ContactDetailClient({
                 marginBottom: "12px",
               }}
             >
-              Notes
+              Log Event Notes
             </h3>
-            <p style={{ fontSize: "14px", color: "#6b7280", lineHeight: "1.7" }}>
-              {contact.notes}
+            <p style={{ fontSize: "12px", color: "#9ca3af", margin: "0 0 10px", lineHeight: 1.5 }}>
+              Paste quick notes and tie them to an interaction type. This updates timeline + last touchpoint.
             </p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "8px" }}>
+              <select
+                value={noteType}
+                onChange={(e) => setNoteType(e.target.value as Interaction["type"])}
+                style={{ padding: "8px 10px", borderRadius: "6px", border: "1px solid #e5e7eb", fontSize: "12px", background: "#fff" }}
+              >
+                <option value="meeting">Meeting / Call</option>
+                <option value="zoom">Zoom</option>
+                <option value="email">Email</option>
+                <option value="message">Message</option>
+                <option value="intro">Intro</option>
+                <option value="event">Event</option>
+              </select>
+              <input
+                type="date"
+                value={noteDate}
+                onChange={(e) => setNoteDate(e.target.value)}
+                style={{ padding: "8px 10px", borderRadius: "6px", border: "1px solid #e5e7eb", fontSize: "12px" }}
+              />
+            </div>
+            <input
+              value={noteTitle}
+              onChange={(e) => setNoteTitle(e.target.value)}
+              placeholder="Title (optional) e.g. Assort Health Call"
+              style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e5e7eb", fontSize: "12px", marginBottom: "8px", boxSizing: "border-box" }}
+            />
+            <textarea
+              value={noteBody}
+              onChange={(e) => setNoteBody(e.target.value)}
+              placeholder="Paste notes from your call/meeting..."
+              rows={5}
+              style={{ width: "100%", padding: "10px", borderRadius: "8px", border: "1px solid #e5e7eb", fontSize: "13px", lineHeight: 1.5, resize: "vertical", fontFamily: "inherit", boxSizing: "border-box" }}
+            />
+            <div style={{ marginTop: "10px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => { void saveInteractionNote(); }}
+                disabled={savingNote}
+                style={{ padding: "8px 12px", background: savingNote ? "#a5b4fc" : "#4f46e5", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: "600", cursor: savingNote ? "wait" : "pointer" }}
+              >
+                {savingNote ? "Saving..." : "Save note"}
+              </button>
+              {noteMessage && (
+                <span style={{ fontSize: "12px", color: noteMessage.startsWith("Saved") ? "#059669" : "#dc2626" }}>
+                  {noteMessage}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Mutual Connections */}
@@ -997,6 +1088,7 @@ export default function ContactDetailClient({
               Interaction Timeline
             </h3>
             <button
+              type="button"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -1016,6 +1108,10 @@ export default function ContactDetailClient({
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = "rgba(79, 70, 229, 0.06)";
+              }}
+              onClick={() => {
+                const notesBox = document.querySelector("textarea[placeholder='Paste notes from your call/meeting...']") as HTMLTextAreaElement | null;
+                notesBox?.focus();
               }}
             >
               <Plus size={12} />

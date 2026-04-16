@@ -18,6 +18,13 @@ const avatarColor = (name: string) => { let h = 0; for (let i = 0; i < name.leng
 
 export type ApplyPayload = { matched_contact?: { id: string; name: string } | null; new_contact?: { name: string; company: string; role: string } | null; interaction?: { type: string; title: string; notes: string } | null; reminder?: { date: string; text: string } | null; tags?: string[]; summary?: string; sourceInput?: string };
 export type AddSecondDegreeEdgeInput = { introducerContactId: string; targetName: string; targetCompany: string; targetRole: string; targetContactId?: string; targetLinkedIn?: string; evidence: string; confidence: 1 | 2 | 3 | 4 | 5; notes?: string };
+export type AddContactInteractionInput = {
+  contactId: string;
+  type: string;
+  title: string;
+  notes: string;
+  date?: string;
+};
 export interface TodayData { staleContacts: { contact: Contact; daysSince: number }[]; dueReminders: StandaloneReminder[] }
 
 async function getHydratedContacts(userId: string): Promise<Contact[]> {
@@ -91,6 +98,60 @@ export async function applyCrmUpdate(payload: ApplyPayload): Promise<{ ok: true;
 
 export async function snoozeContact(contactId: string, days: number) { const d = new Date(); d.setDate(d.getDate() + days); const supabase = await createSupabaseServerClient(); await supabase.from("contact_snoozes").upsert({ user_id: await requireUserId(), contact_id: contactId, snoozed_until: d.toISOString().slice(0, 10) }); }
 export async function completeReminder(reminderId: string) { const supabase = await createSupabaseServerClient(); await supabase.from("reminders").update({ done: true }).eq("id", reminderId).eq("user_id", await requireUserId()); }
+
+export async function addContactInteraction(input: AddContactInteractionInput): Promise<{ ok: true } | { ok: false; error: string }> {
+  const userId = await requireUserId();
+  const supabase = await createSupabaseServerClient();
+  const date = input.date?.trim() || todayISO();
+  const notes = input.notes.trim();
+  const title = input.title.trim() || `${asInteractionType(input.type)} note`;
+
+  if (!input.contactId.trim()) return { ok: false, error: "contactId required" };
+  if (!notes) return { ok: false, error: "notes required" };
+
+  const interactionType = asInteractionType(input.type);
+  const { data: contact, error: contactErr } = await supabase
+    .from("contacts")
+    .select("id,name")
+    .eq("id", input.contactId)
+    .eq("user_id", userId)
+    .single();
+  if (contactErr || !contact) return { ok: false, error: "Contact not found" };
+
+  const { error: interactionErr } = await supabase.from("interactions").insert({
+    id: randomUUID(),
+    user_id: userId,
+    contact_id: input.contactId,
+    date,
+    type: interactionType,
+    title,
+    notes,
+    reminder: null,
+  });
+  if (interactionErr) return { ok: false, error: interactionErr.message };
+
+  const { error: contactUpdateErr } = await supabase
+    .from("contacts")
+    .update({
+      last_contact_type: interactionType,
+      last_contact_date: date,
+      last_contact_description: title,
+      notes,
+    })
+    .eq("id", input.contactId)
+    .eq("user_id", userId);
+  if (contactUpdateErr) return { ok: false, error: contactUpdateErr.message };
+
+  await supabase.from("recent_updates").insert({
+    id: randomUUID(),
+    user_id: userId,
+    timestamp: new Date().toISOString(),
+    input: `Logged note for ${contact.name}`,
+    actions: [`Added ${interactionType}: ${title}`],
+  });
+
+  return { ok: true };
+}
 
 export async function getTodayData(): Promise<TodayData> {
   const userId = await requireUserId(); const contacts = await getHydratedContacts(userId); const supabase = await createSupabaseServerClient();
