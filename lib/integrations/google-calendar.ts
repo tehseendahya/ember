@@ -7,6 +7,22 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 const GOOGLE_AUTH_BASE = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_CALENDAR_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+
+/** Events with start ≥ (now − this many days) are included. */
+const SYNC_LOOKBACK_DAYS = 14;
+/** Google allows up to 2500; we paginate until no nextPageToken (fixes the old maxResults=50 cap). */
+const SYNC_PAGE_SIZE = 250;
+
+function gCalSyncVerbose(): boolean {
+  const v = process.env.GOOGLE_CALENDAR_SYNC_LOG?.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "all";
+}
+
+function gCalSyncLog(...args: unknown[]): void {
+  if (gCalSyncVerbose()) {
+    console.log("[GCal sync]", ...args);
+  }
+}
 const EXA_URL = "https://api.exa.ai/search";
 const DEFAULT_SCOPES = [
   "openid",
@@ -269,7 +285,31 @@ function nameFromEmail(email: string): string {
     .join(" ");
 }
 
-type EventParticipant = { name: string; email: string | null };
+type EventParticipant = {
+  name: string;
+  email: string | null;
+  /** When false, we only create a reminder — no new CRM contact (avoids junk from "lunch with Sarah"). */
+  confidenceHigh: boolean;
+  /** Name came only from event title parsing (no attendees). */
+  summaryOnly: boolean;
+};
+
+function participantConfidence(name: string, email: string | null, summaryOnly: boolean): { confidenceHigh: boolean; summaryOnly: boolean } {
+  const em = email?.trim().toLowerCase() ?? "";
+  if (em && isLikelyHumanEmail(em)) {
+    return { confidenceHigh: true, summaryOnly };
+  }
+  const n = name.trim();
+  if (!n) return { confidenceHigh: false, summaryOnly };
+  const parts = n.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2 && looksLikePersonNameFlexible(n, false)) {
+    return { confidenceHigh: true, summaryOnly };
+  }
+  if (summaryOnly) {
+    return { confidenceHigh: false, summaryOnly: true };
+  }
+  return { confidenceHigh: false, summaryOnly: false };
+}
 
 const MEETING_PREFIXES = [
   "call",
@@ -321,7 +361,15 @@ function isLikelyHumanEmail(email: string): boolean {
   return true;
 }
 
-function companyFromEmailDomain(email: string | null): string {
+/** Single-segment local parts like "avihanj" are often handles, not "First Last" names. Prefer display name / event title. */
+function isUnreliableEmailLocalPartAsName(email: string): boolean {
+  const local = email.split("@")[0]?.trim() ?? "";
+  if (!local) return true;
+  if (/[._-]/.test(local)) return false;
+  return /^[a-z][a-z0-9]{3,}$/.test(local);
+}
+
+export function companyFromEmailDomain(email: string | null): string {
   if (!email) return "";
   const domain = email.split("@")[1]?.toLowerCase() ?? "";
   if (!domain) return "";
@@ -350,14 +398,61 @@ function linkedInSearchUrl(name: string, companyHint?: string): string {
   return `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(q)}`;
 }
 
-async function resolveLinkedInUrl(name: string, companyHint: string, email: string | null): Promise<string> {
-  const exaKey = process.env.EXA_API_KEY?.trim();
+function excerptFromExaHit(hit: { title?: string; highlights?: string[]; text?: string }): string {
+  if (hit.highlights?.length) return hit.highlights.join(" ").trim();
+  if (hit.text) return hit.text.trim();
+  return hit.title ?? "";
+}
+
+function scoreLinkedInHitForName(hit: { title?: string; url?: string }, name: string): number {
+  const tokens = name
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length > 1);
+  if (tokens.length === 0) return 0;
+  const slug = (hit.url ?? "").toLowerCase();
+  const title = (hit.title ?? "").toLowerCase();
+  let score = 0;
+  for (const t of tokens) {
+    if (slug.includes(t)) score += 6;
+    if (title.includes(t)) score += 4;
+  }
+  if (tokens[0] && !title.includes(tokens[0]) && !slug.includes(tokens[0])) score -= 8;
+  return score;
+}
+
+export interface PersonWebResult {
+  linkedin: string;
+  /** Raw excerpt for LLM / notes (may be long). */
+  bio: string | null;
+  /** Exa/LinkedIn hit title, e.g. "Name - Role - Company | LinkedIn" — helps set role/company. */
+  sourceTitle: string | null;
+}
+
+/**
+ * One Exa people search: best LinkedIn /in/ URL for the given name + company hint, plus a short bio excerpt.
+ * Used for calendar-created contacts and manual "Repopulate from web".
+ */
+export async function resolvePersonFromWeb(
+  name: string,
+  companyHint: string,
+  email: string | null,
+): Promise<PersonWebResult> {
+  const trimmed = name.trim();
   const fallbackHint = companyHint || companyFromEmailDomain(email);
-  const fallback = linkedInSearchUrl(name, fallbackHint);
-  if (!exaKey) return fallback;
+  const fallbackSearch = linkedInSearchUrl(trimmed, fallbackHint);
+  if (!trimmed) {
+    return { linkedin: fallbackSearch, bio: null, sourceTitle: null };
+  }
+
+  const exaKey = process.env.EXA_API_KEY?.trim();
+  if (!exaKey) {
+    return { linkedin: fallbackSearch, bio: null, sourceTitle: null };
+  }
+
+  const query = [trimmed, fallbackHint, "linkedin"].filter(Boolean).join(" ");
 
   try {
-    const query = [name, fallbackHint, "site:linkedin.com/in"].filter(Boolean).join(" ");
     const res = await fetch(EXA_URL, {
       method: "POST",
       headers: {
@@ -366,19 +461,50 @@ async function resolveLinkedInUrl(name: string, companyHint: string, email: stri
       },
       body: JSON.stringify({
         query,
+        category: "people",
         type: "auto",
-        num_results: 3,
+        num_results: 8,
+        contents: {
+          highlights: { max_characters: 2000 },
+        },
       }),
       cache: "no-store",
     });
-    if (!res.ok) return fallback;
-    const data = (await res.json()) as { results?: Array<{ url?: string }> };
-    const urls = (data.results ?? []).map((r) => r.url ?? "").filter(Boolean);
-    const profile = urls.find((url) => /linkedin\.com\/in\//i.test(url));
-    return profile ?? fallback;
+    if (!res.ok) {
+      return { linkedin: fallbackSearch, bio: null, sourceTitle: null };
+    }
+    const data = (await res.json()) as {
+      results?: Array<{ url?: string; title?: string; highlights?: string[]; text?: string }>;
+    };
+    const hits = data.results ?? [];
+    const linkedInHits = hits.filter((h) => /linkedin\.com\/in\//i.test(h.url ?? ""));
+
+    if (linkedInHits.length === 0) {
+      const any = hits[0];
+      if (any?.url && /linkedin\.com\/in\//i.test(any.url)) {
+        const bio = excerptFromExaHit(any).slice(0, 1200) || null;
+        return { linkedin: any.url, bio, sourceTitle: any.title ?? null };
+      }
+      return { linkedin: fallbackSearch, bio: null, sourceTitle: null };
+    }
+
+    const scored = linkedInHits
+      .map((h) => ({ hit: h, score: scoreLinkedInHitForName(h, trimmed) }))
+      .sort((a, b) => b.score - a.score);
+    const best = scored[0]?.hit;
+    if (!best?.url) {
+      return { linkedin: fallbackSearch, bio: null, sourceTitle: null };
+    }
+    const bio = excerptFromExaHit(best).slice(0, 1200) || null;
+    return { linkedin: best.url, bio, sourceTitle: best.title ?? null };
   } catch {
-    return fallback;
+    return { linkedin: fallbackSearch, bio: null, sourceTitle: null };
   }
+}
+
+export async function resolveLinkedInUrl(name: string, companyHint: string, email: string | null): Promise<string> {
+  const { linkedin } = await resolvePersonFromWeb(name, companyHint, email);
+  return linkedin;
 }
 
 function looksLikePersonNameFlexible(value: string, allowSingleToken: boolean): boolean {
@@ -425,26 +551,35 @@ function extractParticipants(event: GoogleCalendarEvent): EventParticipant[] {
     const emailName = normalizePersonCandidate(emailNameRaw);
 
     let selectedName = "";
-    if (email && isLikelyHumanEmail(email) && looksLikePersonNameFlexible(emailName, true)) {
-      selectedName = titleCaseWords(emailName);
-    } else if (looksLikePersonNameFlexible(displayName, true)) {
+    if (looksLikePersonNameFlexible(displayName, true)) {
       selectedName = titleCaseWords(displayName);
     } else if (summary) {
       const fromSummary = extractNameFromSummary(summary);
       if (fromSummary) selectedName = fromSummary;
+    } else if (
+      email &&
+      isLikelyHumanEmail(email) &&
+      looksLikePersonNameFlexible(emailName, true) &&
+      !isUnreliableEmailLocalPartAsName(email)
+    ) {
+      selectedName = titleCaseWords(emailName);
+    } else if (email && isLikelyHumanEmail(email) && looksLikePersonNameFlexible(emailName, true)) {
+      selectedName = titleCaseWords(emailName);
     }
 
     if (!selectedName) continue;
     const key = email || selectedName.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    participants.push({ name: selectedName, email: email || null });
+    const { confidenceHigh, summaryOnly } = participantConfidence(selectedName, email || null, false);
+    participants.push({ name: selectedName, email: email || null, confidenceHigh, summaryOnly });
   }
   if (participants.length > 0) return participants;
 
   const fromSummary = extractNameFromSummary(summary);
   if (fromSummary) {
-    participants.push({ name: fromSummary, email: null });
+    const { confidenceHigh, summaryOnly } = participantConfidence(fromSummary, null, true);
+    participants.push({ name: fromSummary, email: null, confidenceHigh, summaryOnly });
   }
   return participants;
 }
@@ -454,7 +589,49 @@ function isLikelyPeopleMeeting(event: GoogleCalendarEvent): boolean {
   const participants = extractParticipants(event);
   if (participants.length > 0) return true;
   const summary = event.summary?.trim() ?? "";
-  return /\b(1:1|coffee|lunch|dinner|meet|intro)\b/i.test(summary);
+  return /\b(1:1|coffee|lunch|dinner|meet|intro|call|sync|chat|zoom)\b/i.test(summary);
+}
+
+function syncSkipReason(event: GoogleCalendarEvent, date: string | null): string {
+  if (!event.id) return "missing event id";
+  if (!date) return "missing or invalid start (no usable start.date / dateTime)";
+  if (!isLikelyPeopleMeeting(event)) {
+    if (!event.start?.dateTime) return "all-day only (start.date) — sync uses timed events with start.dateTime";
+    const summary = event.summary?.trim() ?? "(no title)";
+    return `no extractable person + title has no trigger word (1:1 coffee lunch dinner meet intro call sync chat zoom): "${summary.slice(0, 100)}"`;
+  }
+  return "";
+}
+
+async function fetchPrimaryCalendarEvents(accessToken: string, timeMinIso: string): Promise<{
+  events: GoogleCalendarEvent[];
+  pages: number;
+}> {
+  const events: GoogleCalendarEvent[] = [];
+  let pageToken: string | undefined;
+  let pages = 0;
+  do {
+    pages++;
+    const eventsUrl = new URL(GOOGLE_CALENDAR_EVENTS_URL);
+    eventsUrl.searchParams.set("singleEvents", "true");
+    eventsUrl.searchParams.set("orderBy", "startTime");
+    eventsUrl.searchParams.set("timeMin", timeMinIso);
+    eventsUrl.searchParams.set("maxResults", String(SYNC_PAGE_SIZE));
+    if (pageToken) eventsUrl.searchParams.set("pageToken", pageToken);
+    const res = await fetch(eventsUrl.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    const payload = (await res.json()) as { items?: GoogleCalendarEvent[]; nextPageToken?: string };
+    const batch = (payload.items ?? []).filter((e) => e.status !== "cancelled");
+    events.push(...batch);
+    pageToken = payload.nextPageToken;
+    gCalSyncLog(`page ${pages}: +${batch.length} events (total so far ${events.length})${pageToken ? ", next page…" : ""}`);
+  } while (pageToken);
+  return { events, pages };
 }
 
 export async function getGoogleIntegrationStatus(): Promise<GoogleIntegrationStatus> {
@@ -545,21 +722,21 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
   }
 
   const since = new Date();
-  since.setDate(since.getDate() - 14);
+  since.setDate(since.getDate() - SYNC_LOOKBACK_DAYS);
   const timeMin = since.toISOString();
 
-  const eventsUrl = new URL(GOOGLE_CALENDAR_EVENTS_URL);
-  eventsUrl.searchParams.set("singleEvents", "true");
-  eventsUrl.searchParams.set("orderBy", "startTime");
-  eventsUrl.searchParams.set("timeMin", timeMin);
-  eventsUrl.searchParams.set("maxResults", "50");
+  console.log(
+    `[GCal sync] Query: calendars/primary/events · timeMin=${timeMin} (now − ${SYNC_LOOKBACK_DAYS} days), no timeMax (all events after that), singleEvents=true, orderBy=startTime, pageSize=${SYNC_PAGE_SIZE}, paginate until exhausted.`,
+  );
 
-  const res = await fetch(eventsUrl.toString(), {
-    headers: { Authorization: `Bearer ${token.accessToken}` },
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    const details = await res.text();
+  let events: GoogleCalendarEvent[];
+  let pageCount: number;
+  try {
+    const fetched = await fetchPrimaryCalendarEvents(token.accessToken, timeMin);
+    events = fetched.events;
+    pageCount = fetched.pages;
+  } catch (err) {
+    const details = err instanceof Error ? err.message : String(err);
     return {
       ok: false,
       reason: `Google Calendar read failed: ${details}`,
@@ -570,8 +747,10 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
     };
   }
 
-  const payload = (await res.json()) as { items?: GoogleCalendarEvent[] };
-  const events = (payload.items ?? []).filter((event) => event.status !== "cancelled");
+  console.log(
+    `[GCal sync] Loaded ${events.length} non-cancelled event(s) in ${pageCount} page(s). Per-event detail: set GOOGLE_CALENDAR_SYNC_LOG=1 in .env.local`,
+  );
+
   const supabase = await createSupabaseServerClient();
   await supabase
     .from("reminders")
@@ -599,10 +778,27 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
     const date = eventDate(event);
     if (!date || !event.id || !isLikelyPeopleMeeting(event)) {
       skippedEvents++;
+      gCalSyncLog("SKIP", {
+        id: event.id,
+        summary: (event.summary ?? "").slice(0, 120),
+        start: event.start?.date ?? event.start?.dateTime,
+        reason: syncSkipReason(event, date),
+      });
       continue;
     }
     const participants = extractParticipants(event);
     const title = event.summary?.trim() || "Calendar meeting";
+    gCalSyncLog("PROCESS", {
+      id: event.id,
+      title: title.slice(0, 120),
+      date,
+      participantCount: participants.length,
+      participants: participants.map((p) => ({
+        name: p.name,
+        hasEmail: Boolean(p.email),
+        confidenceHigh: p.confidenceHigh,
+      })),
+    });
     const interactionNotes = `Synced from Google Calendar${event.htmlLink ? ` (${event.htmlLink})` : ""}`;
 
     if (participants.length === 0) {
@@ -644,10 +840,48 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
       const summaryCompanyHint = companyHintFromSummary(title);
       const emailCompanyHint = companyFromEmailDomain(participant.email);
       const companyHint = summaryCompanyHint || emailCompanyHint;
+
       const contactMatch =
         (participant.email ? contactsByEmail.get(participant.email) : null) ??
-        contactsByName.get(normalizedName) ??
+        (participant.confidenceHigh ? contactsByName.get(normalizedName) : null) ??
         null;
+
+      /** Title-only / first-name-only — do not create CRM contacts or guess LinkedIn; reminder only. */
+      if (!participant.confidenceHigh) {
+        const lowCtxKey = `${event.id}:ctx:${normalizedName.slice(0, 80)}`;
+        const text = `Calendar follow-up: ${title}${participant.name ? ` — mentioned: ${participant.name}` : ""}`;
+        const existingLow = (existingReminders ?? []).find(
+          (r) => r.source === "google_calendar" && r.external_event_id === lowCtxKey,
+        );
+        if (existingLow) {
+          await supabase
+            .from("reminders")
+            .update({
+              date,
+              text,
+              contact_id: null,
+              external_url: event.htmlLink ?? existingLow.external_url ?? null,
+              done: false,
+            })
+            .eq("id", existingLow.id)
+            .eq("user_id", userId);
+          updatedReminders++;
+        } else {
+          await supabase.from("reminders").insert({
+            id: randomUUID(),
+            user_id: userId,
+            contact_id: null,
+            date,
+            text,
+            done: false,
+            source: "google_calendar",
+            external_event_id: lowCtxKey,
+            external_url: event.htmlLink ?? null,
+          });
+          addedReminders++;
+        }
+        continue;
+      }
 
       let contactId = contactMatch?.id ?? null;
       if (!contactId) {
@@ -658,21 +892,33 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
           .slice(0, 2)
           .map((p) => p[0]?.toUpperCase() ?? "")
           .join("") || "?";
+        const { enrichContactFromWeb } = await import("@/lib/integrations/enrich-contact-from-web");
+        const enriched = await enrichContactFromWeb({
+          name: participant.name,
+          email: participant.email,
+          companyHint,
+          relationshipContext: `Synced from calendar meeting: ${title}. Tags: google-calendar.`,
+          whenNoWebData: {
+            role: "",
+            company: companyHint,
+            notes: "",
+          },
+        });
         await supabase.from("contacts").insert({
           id: contactId,
           user_id: userId,
           name: participant.name,
           email: participant.email ?? "",
-          company: companyHint,
-          role: "",
-          linkedin: await resolveLinkedInUrl(participant.name, companyHint, participant.email),
+          company: enriched.company || companyHint,
+          role: enriched.role,
+          linkedin: enriched.linkedin,
           avatar,
           avatar_color: "#60a5fa",
           tags: ["google-calendar"],
           last_contact_type: "meeting",
           last_contact_date: date,
           last_contact_description: title,
-          notes: "",
+          notes: enriched.notes,
           connection_strength: 2,
           mutual_connections: [],
         });
@@ -759,6 +1005,9 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
       `Skipped ${skippedEvents} events`,
     ],
   });
+  console.log(
+    `[GCal sync] Summary: fetched=${events.length}, skippedByFilters=${skippedEvents}, remindersInserted=${addedReminders}, remindersUpdated=${updatedReminders}`,
+  );
   return {
     ok: true,
     addedReminders,
