@@ -25,6 +25,10 @@ export type AddContactInteractionInput = {
   notes: string;
   date?: string;
 };
+export type UpdateInteractionNotesInput = {
+  interactionId: string;
+  notes: string;
+};
 export interface TodayData { staleContacts: { contact: Contact; daysSince: number }[]; dueReminders: StandaloneReminder[] }
 
 async function getHydratedContacts(userId: string): Promise<Contact[]> {
@@ -149,6 +153,43 @@ export async function addContactInteraction(input: AddContactInteractionInput): 
     input: `Logged note for ${contact.name}`,
     actions: [`Added ${interactionType}: ${title}`],
   });
+
+  return { ok: true };
+}
+
+export async function updateInteractionNotes(input: UpdateInteractionNotesInput): Promise<{ ok: true } | { ok: false; error: string }> {
+  const userId = await requireUserId();
+  const supabase = await createSupabaseServerClient();
+  const notes = input.notes.trim();
+  if (!input.interactionId.trim()) return { ok: false, error: "interactionId required" };
+  if (!notes) return { ok: false, error: "notes required" };
+
+  const { data: interaction, error: interactionErr } = await supabase
+    .from("interactions")
+    .select("id, contact_id, title, type, date")
+    .eq("id", input.interactionId)
+    .eq("user_id", userId)
+    .single();
+  if (interactionErr || !interaction) return { ok: false, error: "Interaction not found" };
+
+  const { error: updateErr } = await supabase
+    .from("interactions")
+    .update({ notes })
+    .eq("id", input.interactionId)
+    .eq("user_id", userId);
+  if (updateErr) return { ok: false, error: updateErr.message };
+
+  const { error: contactUpdateErr } = await supabase
+    .from("contacts")
+    .update({
+      last_contact_type: interaction.type,
+      last_contact_date: interaction.date,
+      last_contact_description: interaction.title,
+      notes,
+    })
+    .eq("id", interaction.contact_id)
+    .eq("user_id", userId);
+  if (contactUpdateErr) return { ok: false, error: contactUpdateErr.message };
 
   return { ok: true };
 }

@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { addContactInteraction, completeReminder, snoozeContact } from "@/lib/data";
+import { addContactInteraction, completeReminder, snoozeContact, updateInteractionNotes } from "@/lib/data";
 
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as
       | { action: "snooze"; contactId: string; days?: number }
       | { action: "complete_reminder"; reminderId: string }
-      | { action: "add_interaction"; contactId: string; type: string; title: string; notes: string; date?: string };
+      | { action: "add_interaction"; contactId: string; type: string; title: string; notes: string; date?: string }
+      | { action: "update_interaction_notes"; interactionId: string; notes: string; contactId: string };
 
     if (body.action === "snooze") {
       if (!body.contactId) {
@@ -38,6 +39,25 @@ export async function POST(req: NextRequest) {
         title: body.title,
         notes: body.notes,
         date: body.date,
+      });
+      if (!result.ok) {
+        return NextResponse.json({ ok: false, error: result.error }, { status: 400 });
+      }
+      revalidatePath(`/my-people/${body.contactId}`);
+      revalidatePath("/my-people");
+      revalidatePath("/");
+      return NextResponse.json({ ok: true });
+    }
+    if (body.action === "update_interaction_notes") {
+      if (!body.interactionId) {
+        return NextResponse.json({ ok: false, error: "interactionId required" }, { status: 400 });
+      }
+      if (!body.notes?.trim()) {
+        return NextResponse.json({ ok: false, error: "notes required" }, { status: 400 });
+      }
+      const result = await updateInteractionNotes({
+        interactionId: body.interactionId,
+        notes: body.notes,
       });
       if (!result.ok) {
         return NextResponse.json({ ok: false, error: result.error }, { status: 400 });

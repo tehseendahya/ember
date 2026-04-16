@@ -23,7 +23,7 @@ export type {
   WorldSearchResult,
 } from "@/lib/types";
 
-export type { AddContactInteractionInput, AddSecondDegreeEdgeInput, ApplyPayload, TodayData } from "./store/supabase-store";
+export type { AddContactInteractionInput, AddSecondDegreeEdgeInput, ApplyPayload, TodayData, UpdateInteractionNotesInput } from "./store/supabase-store";
 
 export {
   addSecondDegreeEdge,
@@ -45,6 +45,7 @@ export {
   getTodayData,
   getWeeklyDigest,
   snoozeContact,
+  updateInteractionNotes,
 } from "./store/supabase-store";
 
 export {

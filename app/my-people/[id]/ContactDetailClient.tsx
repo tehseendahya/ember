@@ -13,7 +13,6 @@ import {
   Bell,
   ChevronDown,
   ChevronUp,
-  Plus,
   Handshake,
   MapPin,
   GitBranch,
@@ -130,9 +129,49 @@ function IntroFromSearchBannerInner() {
   );
 }
 
-function InteractionItem({ interaction }: { interaction: Interaction }) {
+function InteractionItem({
+  interaction,
+  contactId,
+}: {
+  interaction: Interaction;
+  contactId: string;
+}) {
   const [expanded, setExpanded] = useState(false);
+  const [notesDraft, setNotesDraft] = useState(interaction.notes ?? "");
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const config = typeConfig[interaction.type] || typeConfig.meeting;
+
+  async function saveNotes() {
+    if (!notesDraft.trim()) {
+      setSaveMessage("Notes cannot be empty.");
+      return;
+    }
+    setSaving(true);
+    setSaveMessage(null);
+    try {
+      const res = await fetch("/api/crm/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_interaction_notes",
+          interactionId: interaction.id,
+          notes: notesDraft.trim(),
+          contactId,
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || data.ok === false) {
+        setSaveMessage(data.error ?? "Could not save notes.");
+        return;
+      }
+      setSaveMessage("Saved.");
+    } catch {
+      setSaveMessage("Could not save notes.");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <div
@@ -213,20 +252,51 @@ function InteractionItem({ interaction }: { interaction: Interaction }) {
             >
               {formatDate(interaction.date)}
             </div>
-            {expanded && interaction.notes && (
-              <div
-                style={{
-                  fontSize: "13px",
-                  color: "#6b7280",
-                  lineHeight: "1.6",
-                  padding: "10px 12px",
-                  background: "#ffffff",
-                  borderRadius: "6px",
-                  border: "1px solid #f3f4f6",
-                  marginBottom: interaction.reminder ? "8px" : 0,
-                }}
-              >
-                {interaction.notes}
+            {expanded && (
+              <div style={{ marginBottom: interaction.reminder ? "8px" : 0 }}>
+                <textarea
+                  value={notesDraft}
+                  onChange={(e) => setNotesDraft(e.target.value)}
+                  placeholder="Paste notes for this interaction..."
+                  rows={4}
+                  style={{
+                    width: "100%",
+                    fontSize: "13px",
+                    color: "#6b7280",
+                    lineHeight: "1.6",
+                    padding: "10px 12px",
+                    background: "#ffffff",
+                    borderRadius: "6px",
+                    border: "1px solid #f3f4f6",
+                    resize: "vertical",
+                    fontFamily: "inherit",
+                    boxSizing: "border-box",
+                  }}
+                />
+                <div style={{ marginTop: "8px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => { void saveNotes(); }}
+                    disabled={saving}
+                    style={{
+                      padding: "6px 10px",
+                      background: saving ? "#a5b4fc" : "#4f46e5",
+                      border: "none",
+                      borderRadius: "6px",
+                      color: "#fff",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      cursor: saving ? "wait" : "pointer",
+                    }}
+                  >
+                    {saving ? "Saving..." : "Save notes"}
+                  </button>
+                  {saveMessage && (
+                    <span style={{ fontSize: "12px", color: saveMessage === "Saved." ? "#059669" : "#dc2626" }}>
+                      {saveMessage}
+                    </span>
+                  )}
+                </div>
               </div>
             )}
             {expanded && interaction.reminder && (
@@ -565,7 +635,6 @@ export default function ContactDetailClient({
   allContacts: Contact[];
   secondDegreeEdges: SecondDegreeEdge[];
 }) {
-  const router = useRouter();
   const borderColor = strengthColors[contact.connectionStrength] || "#9ca3af";
   const mutualContacts = contact.mutualConnections
     .map((mid) => allContacts.find((c) => c.id === mid))
@@ -576,48 +645,6 @@ export default function ContactDetailClient({
   const sortedInteractions = [...contact.interactions].sort(
     (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
   );
-  const [noteType, setNoteType] = useState<Interaction["type"]>("meeting");
-  const [noteTitle, setNoteTitle] = useState("");
-  const [noteBody, setNoteBody] = useState("");
-  const [noteDate, setNoteDate] = useState(new Date().toISOString().slice(0, 10));
-  const [savingNote, setSavingNote] = useState(false);
-  const [noteMessage, setNoteMessage] = useState<string | null>(null);
-
-  async function saveInteractionNote() {
-    if (!noteBody.trim()) {
-      setNoteMessage("Paste some notes first.");
-      return;
-    }
-    setSavingNote(true);
-    setNoteMessage(null);
-    try {
-      const res = await fetch("/api/crm/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "add_interaction",
-          contactId: contact.id,
-          type: noteType,
-          title: noteTitle.trim(),
-          notes: noteBody.trim(),
-          date: noteDate,
-        }),
-      });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
-      if (!res.ok || data.ok === false) {
-        setNoteMessage(data.error ?? "Could not save note.");
-        return;
-      }
-      setNoteBody("");
-      setNoteTitle("");
-      setNoteMessage("Saved interaction note.");
-      router.refresh();
-    } catch {
-      setNoteMessage("Could not save note.");
-    } finally {
-      setSavingNote(false);
-    }
-  }
 
   return (
     <div className="detail-container" style={{ padding: "32px 40px", maxWidth: "1200px" }}>
@@ -825,182 +852,16 @@ export default function ContactDetailClient({
         </div>
       </div>
 
-      {/* Two-column layout */}
-      <div className="detail-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1.6fr", gap: "24px" }}>
-        {/* Left Column */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          {/* Event Notes */}
-          <div
-            style={{
-              background: "#ffffff",
-              border: "1px solid #e5e7eb",
-              borderRadius: "12px",
-              padding: "20px",
-            }}
-          >
-            <h3
-              style={{
-                fontSize: "13px",
-                fontWeight: "600",
-                color: "#9ca3af",
-                textTransform: "uppercase",
-                letterSpacing: "0.05em",
-                marginBottom: "12px",
-              }}
-            >
-              Log Event Notes
-            </h3>
-            <p style={{ fontSize: "12px", color: "#9ca3af", margin: "0 0 10px", lineHeight: 1.5 }}>
-              Paste quick notes and tie them to an interaction type. This updates timeline + last touchpoint.
-            </p>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "8px" }}>
-              <select
-                value={noteType}
-                onChange={(e) => setNoteType(e.target.value as Interaction["type"])}
-                style={{ padding: "8px 10px", borderRadius: "6px", border: "1px solid #e5e7eb", fontSize: "12px", background: "#fff" }}
-              >
-                <option value="meeting">Meeting / Call</option>
-                <option value="zoom">Zoom</option>
-                <option value="email">Email</option>
-                <option value="message">Message</option>
-                <option value="intro">Intro</option>
-                <option value="event">Event</option>
-              </select>
-              <input
-                type="date"
-                value={noteDate}
-                onChange={(e) => setNoteDate(e.target.value)}
-                style={{ padding: "8px 10px", borderRadius: "6px", border: "1px solid #e5e7eb", fontSize: "12px" }}
-              />
-            </div>
-            <input
-              value={noteTitle}
-              onChange={(e) => setNoteTitle(e.target.value)}
-              placeholder="Title (optional) e.g. Assort Health Call"
-              style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e5e7eb", fontSize: "12px", marginBottom: "8px", boxSizing: "border-box" }}
-            />
-            <textarea
-              value={noteBody}
-              onChange={(e) => setNoteBody(e.target.value)}
-              placeholder="Paste notes from your call/meeting..."
-              rows={5}
-              style={{ width: "100%", padding: "10px", borderRadius: "8px", border: "1px solid #e5e7eb", fontSize: "13px", lineHeight: 1.5, resize: "vertical", fontFamily: "inherit", boxSizing: "border-box" }}
-            />
-            <div style={{ marginTop: "10px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-              <button
-                type="button"
-                onClick={() => { void saveInteractionNote(); }}
-                disabled={savingNote}
-                style={{ padding: "8px 12px", background: savingNote ? "#a5b4fc" : "#4f46e5", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: "600", cursor: savingNote ? "wait" : "pointer" }}
-              >
-                {savingNote ? "Saving..." : "Save note"}
-              </button>
-              {noteMessage && (
-                <span style={{ fontSize: "12px", color: noteMessage.startsWith("Saved") ? "#059669" : "#dc2626" }}>
-                  {noteMessage}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Mutual Connections */}
-          {mutualContacts.length > 0 && (
-            <div
-              style={{
-                background: "#ffffff",
-                border: "1px solid #e5e7eb",
-                borderRadius: "12px",
-                padding: "20px",
-              }}
-            >
-              <h3
-                style={{
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  color: "#9ca3af",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.05em",
-                  marginBottom: "12px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px",
-                }}
-              >
-                <Users size={13} />
-                Mutual Connections
-              </h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                {mutualContacts.map((mc) => {
-                  if (!mc) return null;
-                  return (
-                    <Link
-                      key={mc.id}
-                      href={`/my-people/${mc.id}`}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "10px",
-                        textDecoration: "none",
-                        padding: "8px 10px",
-                        borderRadius: "8px",
-                        background: "#f8f9fa",
-                        border: "1px solid transparent",
-                        transition: "all 0.15s",
-                      }}
-                      onMouseEnter={(e) => {
-                        (e.currentTarget as HTMLElement).style.background =
-                          "rgba(79, 70, 229, 0.04)";
-                        (e.currentTarget as HTMLElement).style.borderColor =
-                          "rgba(79, 70, 229, 0.12)";
-                      }}
-                      onMouseLeave={(e) => {
-                        (e.currentTarget as HTMLElement).style.background =
-                          "#f8f9fa";
-                        (e.currentTarget as HTMLElement).style.borderColor = "transparent";
-                      }}
-                    >
-                      <div
-                        style={{
-                          width: "32px",
-                          height: "32px",
-                          borderRadius: "50%",
-                          background: mc.avatarColor,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          fontSize: "11px",
-                          fontWeight: "700",
-                          color: "white",
-                        }}
-                      >
-                        {mc.avatar}
-                      </div>
-                      <div>
-                        <div style={{ fontSize: "13px", fontWeight: "600", color: "#111827" }}>
-                          {mc.name}
-                        </div>
-                        <div style={{ fontSize: "11px", color: "#9ca3af" }}>
-                          {mc.role} @ {mc.company}
-                        </div>
-                      </div>
-                    </Link>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          <SecondDegreeConnectionsCard contactId={contact.id} edges={secondDegreeEdges} />
-
-          {/* Contact Info */}
-          <div
-            style={{
-              background: "#ffffff",
-              border: "1px solid #e5e7eb",
-              borderRadius: "12px",
-              padding: "20px",
-            }}
-          >
+      {/* Relationship stats */}
+      <div
+        style={{
+          background: "#ffffff",
+          border: "1px solid #e5e7eb",
+          borderRadius: "12px",
+          padding: "20px",
+          marginBottom: "20px",
+        }}
+      >
             <h3
               style={{
                 fontSize: "13px",
@@ -1011,9 +872,9 @@ export default function ContactDetailClient({
                 marginBottom: "14px",
               }}
             >
-              Quick Stats
+          Relationship Stats
             </h3>
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(140px, 1fr))", gap: "12px" }}>
               {[
                 {
                   icon: <Calendar size={14} style={{ color: "#4f46e5" }} />,
@@ -1039,31 +900,32 @@ export default function ContactDetailClient({
                 <div
                   key={label}
                   style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
+              background: "#f8f9fa",
+              border: "1px solid #f3f4f6",
+              borderRadius: "10px",
+              padding: "10px 12px",
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
                     {icon}
-                    <span style={{ fontSize: "13px", color: "#9ca3af" }}>{label}</span>
+              <span style={{ fontSize: "12px", color: "#9ca3af" }}>{label}</span>
                   </div>
-                  <span style={{ fontSize: "13px", fontWeight: "600", color: "#111827" }}>
+            <span style={{ fontSize: "16px", fontWeight: "700", color: "#111827" }}>
                     {value}
                   </span>
                 </div>
               ))}
             </div>
-          </div>
-        </div>
+      </div>
 
-        {/* Right Column: Timeline */}
+      {/* Meeting logs and notes */}
         <div
           style={{
             background: "#ffffff",
             border: "1px solid #e5e7eb",
             borderRadius: "12px",
             padding: "20px",
+          marginBottom: "20px",
           }}
         >
           <div
@@ -1085,38 +947,11 @@ export default function ContactDetailClient({
                 letterSpacing: "0.05em",
               }}
             >
-              Interaction Timeline
+            Meeting Logs & Notes
             </h3>
-            <button
-              type="button"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                padding: "7px 12px",
-                background: "rgba(79, 70, 229, 0.06)",
-                border: "1px solid rgba(79, 70, 229, 0.12)",
-                borderRadius: "6px",
-                color: "#4f46e5",
-                fontSize: "12px",
-                fontWeight: "500",
-                cursor: "pointer",
-                transition: "all 0.15s",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "rgba(79, 70, 229, 0.1)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "rgba(79, 70, 229, 0.06)";
-              }}
-              onClick={() => {
-                const notesBox = document.querySelector("textarea[placeholder='Paste notes from your call/meeting...']") as HTMLTextAreaElement | null;
-                notesBox?.focus();
-              }}
-            >
-              <Plus size={12} />
-              Add Interaction
-            </button>
+          <span style={{ fontSize: "12px", color: "#9ca3af" }}>
+            Expand each event and paste notes there.
+          </span>
           </div>
 
           {/* Timeline items */}
@@ -1124,6 +959,8 @@ export default function ContactDetailClient({
             style={{
               position: "relative",
               paddingLeft: "0",
+            maxHeight: "640px",
+            overflowY: "auto",
             }}
           >
             {sortedInteractions.map((interaction, idx) => (
@@ -1141,11 +978,90 @@ export default function ContactDetailClient({
                     }}
                   />
                 )}
-                <InteractionItem interaction={interaction} />
+              <InteractionItem interaction={interaction} contactId={contact.id} />
               </div>
             ))}
           </div>
         </div>
+
+      {/* Lower sections */}
+      <div className="detail-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+        {mutualContacts.length > 0 && (
+          <div
+            style={{
+              background: "#ffffff",
+              border: "1px solid #e5e7eb",
+              borderRadius: "12px",
+              padding: "20px",
+            }}
+          >
+            <h3
+              style={{
+                fontSize: "13px",
+                fontWeight: "600",
+                color: "#9ca3af",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+                marginBottom: "12px",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+              }}
+            >
+              <Users size={13} />
+              Mutual Connections
+            </h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {mutualContacts.map((mc) => {
+                if (!mc) return null;
+                return (
+                  <Link
+                    key={mc.id}
+                    href={`/my-people/${mc.id}`}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      textDecoration: "none",
+                      padding: "8px 10px",
+                      borderRadius: "8px",
+                      background: "#f8f9fa",
+                      border: "1px solid transparent",
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: "32px",
+                        height: "32px",
+                        borderRadius: "50%",
+                        background: mc.avatarColor,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: "11px",
+                        fontWeight: "700",
+                        color: "white",
+                      }}
+                    >
+                      {mc.avatar}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: "13px", fontWeight: "600", color: "#111827" }}>
+                        {mc.name}
+                      </div>
+                      <div style={{ fontSize: "11px", color: "#9ca3af" }}>
+                        {mc.role} @ {mc.company}
+                      </div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <SecondDegreeConnectionsCard contactId={contact.id} edges={secondDegreeEdges} />
       </div>
 
       <style>{`

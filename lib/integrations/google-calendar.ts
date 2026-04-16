@@ -7,6 +7,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 const GOOGLE_AUTH_BASE = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_CALENDAR_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+const EXA_URL = "https://api.exa.ai/search";
 const DEFAULT_SCOPES = [
   "openid",
   "https://www.googleapis.com/auth/userinfo.email",
@@ -320,6 +321,66 @@ function isLikelyHumanEmail(email: string): boolean {
   return true;
 }
 
+function companyFromEmailDomain(email: string | null): string {
+  if (!email) return "";
+  const domain = email.split("@")[1]?.toLowerCase() ?? "";
+  if (!domain) return "";
+  if (/(gmail\.com|outlook\.com|hotmail\.com|yahoo\.com|icloud\.com|proton\.me|protonmail\.com)$/i.test(domain)) return "";
+  const base = domain.split(".")[0] ?? "";
+  if (!base) return "";
+  return base
+    .split(/[-_]/g)
+    .filter(Boolean)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function companyHintFromSummary(summary: string): string {
+  const normalized = summary.trim();
+  if (!normalized) return "";
+  const m = normalized.match(/^([A-Z][A-Za-z0-9&.'-]*(?:\s+[A-Z][A-Za-z0-9&.'-]*){0,2})\s+(?:Call|Meeting|Sync|Intro|Chat)\b/i);
+  if (!m?.[1]) return "";
+  const candidate = m[1].trim();
+  if (looksLikePersonNameFlexible(candidate, true)) return "";
+  return candidate;
+}
+
+function linkedInSearchUrl(name: string, companyHint?: string): string {
+  const q = companyHint?.trim() ? `${name} ${companyHint}` : name;
+  return `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(q)}`;
+}
+
+async function resolveLinkedInUrl(name: string, companyHint: string, email: string | null): Promise<string> {
+  const exaKey = process.env.EXA_API_KEY?.trim();
+  const fallbackHint = companyHint || companyFromEmailDomain(email);
+  const fallback = linkedInSearchUrl(name, fallbackHint);
+  if (!exaKey) return fallback;
+
+  try {
+    const query = [name, fallbackHint, "site:linkedin.com/in"].filter(Boolean).join(" ");
+    const res = await fetch(EXA_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": exaKey,
+      },
+      body: JSON.stringify({
+        query,
+        type: "auto",
+        num_results: 3,
+      }),
+      cache: "no-store",
+    });
+    if (!res.ok) return fallback;
+    const data = (await res.json()) as { results?: Array<{ url?: string }> };
+    const urls = (data.results ?? []).map((r) => r.url ?? "").filter(Boolean);
+    const profile = urls.find((url) => /linkedin\.com\/in\//i.test(url));
+    return profile ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function looksLikePersonNameFlexible(value: string, allowSingleToken: boolean): boolean {
   const normalized = normalizePersonCandidate(value);
   if (!normalized) return false;
@@ -580,6 +641,9 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
 
     for (const participant of participants) {
       const normalizedName = participant.name.trim().toLowerCase();
+      const summaryCompanyHint = companyHintFromSummary(title);
+      const emailCompanyHint = companyFromEmailDomain(participant.email);
+      const companyHint = summaryCompanyHint || emailCompanyHint;
       const contactMatch =
         (participant.email ? contactsByEmail.get(participant.email) : null) ??
         contactsByName.get(normalizedName) ??
@@ -599,9 +663,9 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
           user_id: userId,
           name: participant.name,
           email: participant.email ?? "",
-          company: "",
+          company: companyHint,
           role: "",
-          linkedin: "",
+          linkedin: await resolveLinkedInUrl(participant.name, companyHint, participant.email),
           avatar,
           avatar_color: "#60a5fa",
           tags: ["google-calendar"],
