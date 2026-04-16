@@ -15,6 +15,6 @@ export async function POST(req: NextRequest) {
   }
 
   const profileContext = typeof body.profileContext === "string" ? body.profileContext.trim() : "";
-  setProfileContext(profileContext);
+  await setProfileContext(profileContext);
   return NextResponse.json({ ok: true });
 }

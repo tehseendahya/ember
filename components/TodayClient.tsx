@@ -7,6 +7,8 @@ import { Bell, CalendarClock, ChevronRight, Clock, RefreshCw, User } from "lucid
 import type { Contact, ReachOutRecommendation, StandaloneReminder, WeeklyDigest } from "@/lib/types";
 
 type ReminderRow = StandaloneReminder & { contactName: string | null };
+const REACH_OUT_CACHE_KEY = "today-reach-out-cache-v1";
+const REACH_OUT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export default function TodayClient({
   staleContacts,
@@ -73,6 +75,23 @@ export default function TodayClient({
   }
 
   async function fetchReachOutRecommendation(forceRefresh: boolean) {
+    if (!forceRefresh && typeof window !== "undefined") {
+      const rawCached = window.localStorage.getItem(REACH_OUT_CACHE_KEY);
+      if (rawCached) {
+        try {
+          const parsed = JSON.parse(rawCached) as { recommendation: ReachOutRecommendation; cachedAt: number };
+          if (parsed.recommendation && Date.now() - parsed.cachedAt < REACH_OUT_CACHE_TTL_MS) {
+            setReachOut(parsed.recommendation);
+            setReachOutError(null);
+            setProfileContextConfigured(true);
+            return;
+          }
+        } catch {
+          // Ignore malformed cache and proceed to API fetch.
+        }
+      }
+    }
+
     setReachOutLoading(true);
     setReachOutError(null);
     try {
@@ -94,6 +113,12 @@ export default function TodayClient({
       }
       if (body.recommendation) {
         setReachOut(body.recommendation);
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(
+            REACH_OUT_CACHE_KEY,
+            JSON.stringify({ recommendation: body.recommendation, cachedAt: Date.now() }),
+          );
+        }
       }
       setProfileContextConfigured(true);
     } finally {

@@ -177,7 +177,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const recommendation = await generateRecommendation(profileContext);
-    setReachOutRecommendation(recommendation);
+    await setReachOutRecommendation(recommendation);
     return NextResponse.json({ recommendation, cached: false as const });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to generate recommendation";
