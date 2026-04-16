@@ -26,7 +26,7 @@ interface GPTResult {
 
 type Draft = Omit<GPTResult, "error">;
 type WebkitWindow = Window & {
-  webkitSpeechRecognition?: new () => SpeechRecognition;
+  webkitSpeechRecognition?: new () => any;
 };
 
 function ResultRow({ color, label }: { color: string; label: string }) {
@@ -49,7 +49,7 @@ export default function UpdateForm() {
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const recognitionRef = useRef<any | null>(null);
   const shouldKeepListeningRef = useRef(false);
   const shouldRestartRef = useRef(true);
 
@@ -74,9 +74,9 @@ export default function UpdateForm() {
     recognition.onstart = () => {
       setIsListening(true);
     };
-    recognition.onresult = (event) => {
-      const text = Array.from(event.results)
-        .slice(event.resultIndex)
+    recognition.onresult = (event: any) => {
+      const text = Array.from(event.results as Array<{ isFinal: boolean; 0?: { transcript?: string } }>)
+        .slice(event.resultIndex as number)
         .filter((result) => result.isFinal)
         .map((result) => result[0]?.transcript ?? "")
         .join(" ")
@@ -87,7 +87,7 @@ export default function UpdateForm() {
       setDraft(null);
       setSaveMessage(null);
     };
-    recognition.onerror = (event) => {
+    recognition.onerror = (event: any) => {
       if (event.error === "not-allowed" || event.error === "service-not-allowed" || event.error === "audio-capture") {
         shouldKeepListeningRef.current = false;
         shouldRestartRef.current = false;

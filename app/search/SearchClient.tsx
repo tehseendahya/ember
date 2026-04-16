@@ -29,7 +29,7 @@ const exampleSearches = [
 
 type NetworkHit = { contact: Contact; relevance: number; reason: string };
 type WebkitWindow = Window & {
-  webkitSpeechRecognition?: new () => SpeechRecognition;
+  webkitSpeechRecognition?: new () => any;
 };
 
 export default function SearchClient({ contacts }: { contacts: Contact[] }) {
@@ -41,7 +41,7 @@ export default function SearchClient({ contacts }: { contacts: Contact[] }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const recognitionRef = useRef<any | null>(null);
   const shouldKeepListeningRef = useRef(false);
   const shouldRestartRef = useRef(true);
 
@@ -138,9 +138,9 @@ export default function SearchClient({ contacts }: { contacts: Contact[] }) {
     recognition.onstart = () => {
       setIsListening(true);
     };
-    recognition.onresult = (event) => {
-      const text = Array.from(event.results)
-        .slice(event.resultIndex)
+    recognition.onresult = (event: any) => {
+      const text = Array.from(event.results as Array<{ isFinal: boolean; 0?: { transcript?: string } }>)
+        .slice(event.resultIndex as number)
         .filter((result) => result.isFinal)
         .map((result) => result[0]?.transcript ?? "")
         .join(" ")
@@ -148,7 +148,7 @@ export default function SearchClient({ contacts }: { contacts: Contact[] }) {
       if (!text) return;
       setQuery((prev) => (prev.trim() ? `${prev.trimEnd()} ${text}` : text));
     };
-    recognition.onerror = (event) => {
+    recognition.onerror = (event: any) => {
       if (event.error === "not-allowed" || event.error === "service-not-allowed" || event.error === "audio-capture") {
         shouldKeepListeningRef.current = false;
         shouldRestartRef.current = false;

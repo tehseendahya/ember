@@ -195,8 +195,8 @@ export function buildGraphViewModel(params: {
     contactLinks.push({ ...l, sourceContactId: x, targetContactId: y });
   }
 
-  const targets: GraphTargetNode[] = secondDegreeEdges
-    .map((edge) => {
+  const mappedTargets = secondDegreeEdges
+    .map((edge): GraphTargetNode | null => {
       const introducer = byId.get(edge.introducerContactId);
       if (!introducer) return null;
       const { score, source } = introScoreFromEdge(introducer.relationshipScore / 100, edge);
@@ -213,7 +213,9 @@ export function buildGraphViewModel(params: {
         lastEvidenceAt: edge.lastEvidenceAt,
       };
     })
-    .filter((t): t is GraphTargetNode => t !== null)
+    .filter((t): t is GraphTargetNode => t !== null);
+
+  const targets: GraphTargetNode[] = mappedTargets
     .sort((a, b) => b.introScore - a.introScore);
 
   const introQueue: IntroQueueItem[] = targets.slice(0, 20).map((t) => {

@@ -1,10 +1,10 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, Suspense, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 
-export default function AuthPage() {
+function AuthForm() {
   const searchParams = useSearchParams();
   const next = useMemo(() => searchParams.get("next") || "/", [searchParams]);
   const [email, setEmail] = useState("");
@@ -56,5 +56,13 @@ export default function AuthPage() {
         {status ? <p style={{ marginTop: 12, color: "#374151" }}>{status}</p> : null}
       </form>
     </div>
+  );
+}
+
+export default function AuthPage() {
+  return (
+    <Suspense fallback={<div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>Loading...</div>}>
+      <AuthForm />
+    </Suspense>
   );
 }
