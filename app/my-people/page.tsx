@@ -1,23 +1,24 @@
 import {
   getContacts,
-  getExtendedConnections,
   getNetworkEdges,
+  getSecondDegreeEdges,
 } from "@/lib/data";
+import { buildGraphViewModel } from "@/lib/network/graph-view-model";
 import MyPeopleClient from "./MyPeopleClient";
 
 export const dynamic = "force-dynamic";
 
 export default async function MyPeoplePage() {
-  const [contacts, networkEdges, extendedConnections] = await Promise.all([
+  const [contacts, networkEdges, secondDegreeEdges] = await Promise.all([
     getContacts(),
     getNetworkEdges(),
-    getExtendedConnections(),
+    getSecondDegreeEdges(),
   ]);
+  const graphModel = buildGraphViewModel({ contacts, networkEdges, secondDegreeEdges });
   return (
     <MyPeopleClient
       contacts={contacts}
-      networkEdges={networkEdges}
-      extendedConnections={extendedConnections}
+      graphModel={graphModel}
     />
   );
 }

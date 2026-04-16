@@ -63,4 +63,3 @@ Core user outcomes:
 - TypeScript across app and server code.
 - ESLint for static checks.
 - Next.js server rendering plus client interactivity where needed.
-
