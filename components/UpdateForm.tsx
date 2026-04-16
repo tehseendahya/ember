@@ -1,8 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, type CSSProperties } from "react";
-import { Send, Sparkles, CheckCircle, Loader, AlertCircle, Save } from "lucide-react";
+import { useRef, useState, type CSSProperties } from "react";
+import { Send, Sparkles, CheckCircle, Loader, AlertCircle, Save, Mic, MicOff } from "lucide-react";
 
 const examplePrompts = [
   "I just had coffee with Sarah Chen and she mentioned a new role opening at Google",
@@ -25,6 +25,9 @@ interface GPTResult {
 }
 
 type Draft = Omit<GPTResult, "error">;
+type WebkitWindow = Window & {
+  webkitSpeechRecognition?: new () => SpeechRecognition;
+};
 
 function ResultRow({ color, label }: { color: string; label: string }) {
   return (
@@ -44,6 +47,84 @@ export default function UpdateForm() {
   const [tagsInput, setTagsInput] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [isListening, setIsListening] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const shouldKeepListeningRef = useRef(false);
+  const shouldRestartRef = useRef(true);
+
+  const startVoiceTyping = () => {
+    if (typeof window === "undefined") return;
+
+    const SpeechRecognitionCtor = (window as WebkitWindow).webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      setVoiceError("Voice typing is not supported in this browser.");
+      return;
+    }
+
+    shouldKeepListeningRef.current = true;
+    shouldRestartRef.current = true;
+    setVoiceError(null);
+    const recognition = new SpeechRecognitionCtor();
+    recognitionRef.current = recognition;
+    recognition.lang = "en-US";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    recognition.onstart = () => {
+      setIsListening(true);
+    };
+    recognition.onresult = (event) => {
+      const text = Array.from(event.results)
+        .slice(event.resultIndex)
+        .filter((result) => result.isFinal)
+        .map((result) => result[0]?.transcript ?? "")
+        .join(" ")
+        .trim();
+      if (!text) return;
+      setInputText((prev) => (prev.trim() ? `${prev.trimEnd()} ${text}` : text));
+      setGptResult(null);
+      setDraft(null);
+      setSaveMessage(null);
+    };
+    recognition.onerror = (event) => {
+      if (event.error === "not-allowed" || event.error === "service-not-allowed" || event.error === "audio-capture") {
+        shouldKeepListeningRef.current = false;
+        shouldRestartRef.current = false;
+        setVoiceError("Mic permission or audio device issue. Check browser microphone access.");
+        return;
+      }
+      if (event.error !== "aborted" && event.error !== "no-speech") {
+        setVoiceError("Voice typing hiccuped and will retry.");
+      }
+    };
+    recognition.onend = () => {
+      if (!shouldKeepListeningRef.current || !shouldRestartRef.current) {
+        setIsListening(false);
+        recognitionRef.current = null;
+        return;
+      }
+      setTimeout(() => {
+        if (!shouldKeepListeningRef.current || !recognitionRef.current) return;
+        try {
+          recognitionRef.current.start();
+        } catch {
+          setVoiceError("Voice typing stopped unexpectedly. Tap mic to restart.");
+          shouldKeepListeningRef.current = false;
+          setIsListening(false);
+          recognitionRef.current = null;
+        }
+      }, 200);
+    };
+    recognition.start();
+  };
+
+  const stopVoiceTyping = () => {
+    shouldKeepListeningRef.current = false;
+    shouldRestartRef.current = false;
+    recognitionRef.current?.stop();
+    setIsListening(false);
+  };
 
   const handleSubmit = async () => {
     if (!inputText.trim()) return;
@@ -195,7 +276,35 @@ export default function UpdateForm() {
               rows={5}
               style={{ width: "100%", background: "transparent", border: "none", color: "#111827", fontSize: "16px", lineHeight: "1.6", resize: "none", outline: "none", fontFamily: "inherit" }}
             />
+            {voiceError && <div style={{ marginTop: "6px", fontSize: "12px", color: "#dc2626" }}>{voiceError}</div>}
           </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (isListening) {
+                stopVoiceTyping();
+                return;
+              }
+              startVoiceTyping();
+            }}
+            title={isListening ? "Stop voice typing" : "Start voice typing"}
+            style={{
+              marginTop: "2px",
+              border: "1px solid #e5e7eb",
+              background: isListening ? "rgba(79, 70, 229, 0.1)" : "#ffffff",
+              color: isListening ? "#4f46e5" : "#6b7280",
+              width: "36px",
+              height: "36px",
+              borderRadius: "8px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              flexShrink: 0,
+            }}
+          >
+            {isListening ? <MicOff size={16} /> : <Mic size={16} />}
+          </button>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
           <span style={{ fontSize: "12px", color: "#d1d5db" }}>{"Press \u2318+Enter to submit"}</span>
