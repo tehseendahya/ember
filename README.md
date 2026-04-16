@@ -2,14 +2,19 @@
 
 ## Demo Day Next Steps
 
-- Get Google Calendar OAuth + sync fully working in production and verify token refresh reliability.
-- Validate whether real last-90-days calendar events can be ingested cleanly (dedupe, useful reminder extraction, low noise).
-- If calendar data is not enough, add email integration and test whether real inbox activity can produce high-signal relationship updates.
+### For demo
+
+- Search about that person when calendar adds them as contact.
+- Decide if email data is needed.
 - Tighten UI/UX for first-time users: simplify navigation, reduce cognitive load, and verify whether all 7 pages are necessary for demo flow.
-- Add a polished "golden path" demo script: connect account -> source reach-out -> log update (voice + text) -> show reminders -> show relationship graph.
-- Add fallback states for every external dependency failure (OAuth errors, empty data, API timeouts) so the demo never dead-ends.
-- Seed at least one realistic account profile + network so the app always tells a compelling story in under 3 minutes.
-- Instrument basic analytics (feature clicks, sync success/failure, time-to-first-value) to learn from demo conversations.
+- Fix visualize network tool.
+- Implement relationship graph features.
+
+### Later
+
+- Email tracker.
+- PostHog when have users.
+- Initial onboarding.
 
 ## What This App Does
 
