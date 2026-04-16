@@ -296,7 +296,12 @@ type EventParticipant = {
   summaryOnly: boolean;
 };
 
-function participantConfidence(name: string, email: string | null, summaryOnly: boolean): { confidenceHigh: boolean; summaryOnly: boolean } {
+function participantConfidence(
+  name: string,
+  email: string | null,
+  summaryOnly: boolean,
+  eventSummary?: string,
+): { confidenceHigh: boolean; summaryOnly: boolean } {
   const em = email?.trim().toLowerCase() ?? "";
   if (em && isLikelyHumanEmail(em)) {
     return { confidenceHigh: true, summaryOnly };
@@ -305,6 +310,10 @@ function participantConfidence(name: string, email: string | null, summaryOnly: 
   if (!n) return { confidenceHigh: false, summaryOnly };
   const parts = n.split(/\s+/).filter(Boolean);
   if (parts.length >= 2 && looksLikePersonNameFlexible(n, false)) {
+    return { confidenceHigh: true, summaryOnly };
+  }
+  const summary = eventSummary?.trim() ?? "";
+  if (summary && inviteStyleCoAttendanceTitle(summary) && looksLikePersonNameFlexible(n, true)) {
     return { confidenceHigh: true, summaryOnly };
   }
   if (summaryOnly) {
@@ -625,8 +634,26 @@ function isBogusExtractedPersonName(name: string): boolean {
   return false;
 }
 
+/** Titles like "Zoom | Tehseen + Alex" or "1:1 Sam + Jordan" — guest is usually after "+". */
+function extractNameAfterPlusInSummary(summary: string): string {
+  const normalized = summary.replace(/[-–:|]/g, " ").replace(/\s+/g, " ").trim();
+  const plus = normalized.match(/\S+\s*\+\s*([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){0,2})\b/);
+  if (!plus?.[1]) return "";
+  const candidate = normalizePersonCandidate(plus[1]);
+  if (!looksLikePersonNameFlexible(candidate, true)) return "";
+  const titled = titleCaseWords(candidate);
+  return isBogusExtractedPersonName(titled) ? "" : titled;
+}
+
+function inviteStyleCoAttendanceTitle(summary: string): boolean {
+  const t = summary.replace(/[-–:|]/g, " ").replace(/\s+/g, " ").trim();
+  return /\S+\s*\+\s*\S+/.test(t);
+}
+
 function extractNameFromSummary(summary: string): string {
   const normalized = summary.replace(/[-–:|]/g, " ").replace(/\s+/g, " ").trim();
+  const afterPlus = extractNameAfterPlusInSummary(summary);
+  if (afterPlus) return afterPlus;
   const withPattern = normalized.match(/\b(?:with|w\/)\s+([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){0,2})\b/i);
   if (withPattern?.[1]) {
     const candidate = normalizePersonCandidate(withPattern[1]);
@@ -664,11 +691,10 @@ function extractParticipants(event: GoogleCalendarEvent): EventParticipant[] {
     const emailName = normalizePersonCandidate(emailNameRaw);
 
     let selectedName = "";
+    let nameSource: "display" | "email" | "title" | "" = "";
     if (looksLikePersonNameFlexible(displayName, true)) {
       selectedName = titleCaseWords(displayName);
-    } else if (summary) {
-      const fromSummary = extractNameFromSummary(summary);
-      if (fromSummary) selectedName = fromSummary;
+      nameSource = "display";
     } else if (
       email &&
       isLikelyHumanEmail(email) &&
@@ -676,22 +702,38 @@ function extractParticipants(event: GoogleCalendarEvent): EventParticipant[] {
       !isUnreliableEmailLocalPartAsName(email)
     ) {
       selectedName = titleCaseWords(emailName);
+      nameSource = "email";
     } else if (email && isLikelyHumanEmail(email) && looksLikePersonNameFlexible(emailName, true)) {
       selectedName = titleCaseWords(emailName);
+      nameSource = "email";
+    } else if (summary) {
+      const fromSummary = extractNameFromSummary(summary);
+      if (fromSummary) {
+        selectedName = fromSummary;
+        nameSource = "title";
+      }
     }
 
     if (!selectedName) continue;
     const key = email || selectedName.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    const { confidenceHigh, summaryOnly } = participantConfidence(selectedName, email || null, false);
+    const { confidenceHigh, summaryOnly } = participantConfidence(selectedName, email || null, false, summary);
+    gCalSyncLog("ATTENDEE", {
+      name: selectedName,
+      nameSource,
+      hasEmail: Boolean(email),
+      emailLooksHuman: email ? isLikelyHumanEmail(email) : false,
+      confidenceHigh,
+      title: summary.slice(0, 100),
+    });
     participants.push({ name: selectedName, email: email || null, confidenceHigh, summaryOnly });
   }
   if (participants.length > 0) return participants;
 
   const fromSummary = extractNameFromSummary(summary);
   if (fromSummary) {
-    const { confidenceHigh, summaryOnly } = participantConfidence(fromSummary, null, true);
+    const { confidenceHigh, summaryOnly } = participantConfidence(fromSummary, null, true, summary);
     participants.push({ name: fromSummary, email: null, confidenceHigh, summaryOnly });
   }
   return participants;
@@ -968,6 +1010,13 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
 
       /** Title-only / first-name-only — do not create CRM contacts or guess LinkedIn; reminder only. */
       if (!participant.confidenceHigh) {
+        gCalSyncLog("REMINDER_ONLY", {
+          eventId: event.id,
+          title: title.slice(0, 120),
+          participantName: participant.name,
+          hasEmail: Boolean(participant.email),
+          note: "No CRM contact: need human attendee email and/or full name, or invite-style title (e.g. Name + Name) for single names.",
+        });
         const lowCtxKey = `${event.id}:ctx:${normalizedName.slice(0, 80)}`;
         const text = `Calendar follow-up: ${title}${participant.name ? ` — mentioned: ${participant.name}` : ""}`;
         const existingLow = (existingReminders ?? []).find(
