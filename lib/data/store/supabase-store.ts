@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import type { Contact, ContactSummary, ExtendedProfile, Interaction, ReachOutRecommendation, RecentUpdate, SecondDegreeEdge, SecondDegreeEvidence, StandaloneReminder, WeeklyDigest } from "@/lib/types";
 import { requireUserId } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { enrichContactFromWeb } from "@/lib/integrations/enrich-contact-from-web";
 
 const STALE_CONTACT_DAYS = 45;
 const DRIFT_DAYS = 30;
@@ -70,7 +71,43 @@ export async function applyCrmUpdate(payload: ApplyPayload): Promise<{ ok: true;
     const id = randomUUID(); const now = todayISO();
     const interaction = payload.interaction ? { id: randomUUID(), user_id: userId, contact_id: id, date: now, type: asInteractionType(payload.interaction.type), title: payload.interaction.title, notes: payload.interaction.notes, reminder: payload.reminder?.date ?? null } : null;
     const tags = [...new Set((payload.tags ?? []).filter(Boolean))]; if (tags.length === 0) tags.push("network");
-    const { error: cErr } = await supabase.from("contacts").insert({ id, user_id: userId, name: payload.new_contact.name, email: "", company: payload.new_contact.company ?? "", role: payload.new_contact.role ?? "", linkedin: "", avatar: initials(payload.new_contact.name), avatar_color: avatarColor(payload.new_contact.name), tags, last_contact_type: interaction?.type ?? "message", last_contact_date: interaction?.date ?? now, last_contact_description: interaction?.title ?? "Added to CRM", notes: interaction?.notes ?? "", connection_strength: 2, mutual_connections: [] });
+    const tagsStr = tags.join(", ");
+    const relationshipContext = [
+      interaction?.title?.trim() && `Logged: ${interaction.title.trim()}`,
+      tagsStr && `Tags: ${tagsStr}`,
+    ]
+      .filter(Boolean)
+      .join(" · ") || "Added from CRM.";
+    const companyHint = (payload.new_contact.company ?? "").trim();
+    const enriched = await enrichContactFromWeb({
+      name: payload.new_contact.name,
+      email: null,
+      companyHint,
+      relationshipContext,
+      whenNoWebData: {
+        role: payload.new_contact.role ?? "",
+        company: payload.new_contact.company ?? "",
+        notes: interaction?.notes ?? "",
+      },
+    });
+    const { error: cErr } = await supabase.from("contacts").insert({
+      id,
+      user_id: userId,
+      name: payload.new_contact.name,
+      email: "",
+      company: enriched.company || (payload.new_contact.company ?? ""),
+      role: enriched.role || (payload.new_contact.role ?? ""),
+      linkedin: enriched.linkedin,
+      avatar: initials(payload.new_contact.name),
+      avatar_color: avatarColor(payload.new_contact.name),
+      tags,
+      last_contact_type: interaction?.type ?? "message",
+      last_contact_date: interaction?.date ?? now,
+      last_contact_description: interaction?.title ?? "Added to CRM",
+      notes: enriched.notes,
+      connection_strength: 2,
+      mutual_connections: [],
+    });
     if (cErr) return { ok: false, error: cErr.message };
     if (interaction) { const { error } = await supabase.from("interactions").insert(interaction); if (error) return { ok: false, error: error.message }; actions.push(`Logged ${interaction.type}: ${interaction.title}`); }
     contactId = id; actions.unshift(`Created contact: ${payload.new_contact.name}`);

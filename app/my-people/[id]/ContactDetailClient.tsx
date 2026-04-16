@@ -16,9 +16,10 @@ import {
   Handshake,
   MapPin,
   GitBranch,
+  CircleDot,
 } from "lucide-react";
 import type { Contact, Interaction, SecondDegreeEdge, SecondDegreeEvidence } from "@/lib/types";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 const strengthColors: Record<number, string> = {
@@ -64,6 +65,100 @@ function formatDate(dateStr: string): string {
     day: "numeric",
     year: "numeric",
   });
+}
+
+function SnapshotCard({ text }: { text: string }) {
+  const items = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => l.replace(/^[•\-\*]\s*/, "").trim())
+    .filter(Boolean);
+  if (items.length === 0) return null;
+
+  const dot = "#6366f1";
+  const border = "rgba(79, 70, 229, 0.14)";
+  const bg = "linear-gradient(165deg, rgba(79, 70, 229, 0.04) 0%, rgba(255, 255, 255, 0.92) 48%, #fafbfc 100%)";
+
+  return (
+    <div
+      style={{
+        marginTop: "18px",
+        maxWidth: "560px",
+        borderRadius: "16px",
+        border: `1px solid ${border}`,
+        background: bg,
+        boxShadow: "0 1px 2px rgba(15, 23, 42, 0.05), 0 4px 14px rgba(79, 70, 229, 0.06)",
+        padding: "16px 18px 18px",
+        boxSizing: "border-box",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+          marginBottom: "14px",
+        }}
+      >
+        <CircleDot size={15} style={{ color: dot, flexShrink: 0, opacity: 0.9 }} />
+        <span
+          style={{
+            fontSize: "11px",
+            fontWeight: 700,
+            color: "#6b7280",
+            textTransform: "uppercase",
+            letterSpacing: "0.08em",
+          }}
+        >
+          Snapshot
+        </span>
+      </div>
+      <ul
+        style={{
+          margin: 0,
+          padding: 0,
+          listStyle: "none",
+        }}
+      >
+        {items.map((item, i) => (
+          <li
+            key={i}
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: "12px",
+              marginBottom: i < items.length - 1 ? "14px" : 0,
+            }}
+          >
+            <span
+              aria-hidden
+              style={{
+                width: "7px",
+                height: "7px",
+                minWidth: "7px",
+                marginTop: "0.48em",
+                borderRadius: "50%",
+                background: `linear-gradient(135deg, ${dot} 0%, #818cf8 100%)`,
+                boxShadow: "0 0 0 3px rgba(99, 102, 241, 0.15)",
+              }}
+            />
+            <span
+              style={{
+                flex: 1,
+                minWidth: 0,
+                fontSize: "14px",
+                lineHeight: 1.55,
+                color: "#374151",
+              }}
+            >
+              {item}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function IntroFromSearchBannerInner() {
@@ -646,6 +741,106 @@ export default function ContactDetailClient({
     (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
   );
 
+  const [nameDraft, setNameDraft] = useState(contact.name);
+  const [savingName, setSavingName] = useState(false);
+  const [nameMessage, setNameMessage] = useState<string | null>(null);
+  const [repopulating, setRepopulating] = useState(false);
+  const [repopulateMessage, setRepopulateMessage] = useState<string | null>(null);
+  const [hasRepopulatedSinceEdit, setHasRepopulatedSinceEdit] = useState(false);
+  const [linkedInUrl, setLinkedInUrl] = useState(contact.linkedIn);
+  const [bioText, setBioText] = useState(contact.notes);
+  const [titleLine, setTitleLine] = useState({ role: contact.role, company: contact.company });
+  const router = useRouter();
+
+  useEffect(() => {
+    setNameDraft(contact.name);
+  }, [contact.id, contact.name]);
+
+  useEffect(() => {
+    setLinkedInUrl(contact.linkedIn);
+  }, [contact.id, contact.linkedIn]);
+
+  useEffect(() => {
+    setBioText(contact.notes);
+  }, [contact.id, contact.notes]);
+
+  useEffect(() => {
+    setTitleLine({ role: contact.role, company: contact.company });
+  }, [contact.id, contact.role, contact.company]);
+
+  const isDirty = nameDraft.trim() !== contact.name.trim();
+
+  async function saveName() {
+    if (!nameDraft.trim() || nameDraft.trim() === contact.name.trim()) return;
+    setSavingName(true);
+    setNameMessage(null);
+    try {
+      const res = await fetch("/api/contacts/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contactId: contact.id, name: nameDraft.trim() }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || data.ok === false) {
+        setNameMessage(data.error ?? "Could not save name.");
+        return;
+      }
+      setNameMessage("Saved.");
+      router.refresh();
+    } catch {
+      setNameMessage("Could not save name.");
+    } finally {
+      setSavingName(false);
+    }
+  }
+
+  async function repopulateLinkedIn() {
+    setRepopulating(true);
+    setRepopulateMessage(null);
+    try {
+      const res = await fetch("/api/contacts/repopulate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contactId: contact.id,
+          nameOverride: nameDraft.trim() || undefined,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        linkedin?: string;
+        notes?: string;
+        role?: string;
+        company?: string;
+      };
+      if (!res.ok || data.ok === false) {
+        setRepopulateMessage(data.error ?? "Could not repopulate profile.");
+        return;
+      }
+      if (typeof data.linkedin === "string" && data.linkedin.trim().length > 0) {
+        setLinkedInUrl(data.linkedin.trim());
+      }
+      if (typeof data.notes === "string" && data.notes.trim().length > 0) {
+        setBioText(data.notes.trim());
+      }
+      if (typeof data.role === "string" || typeof data.company === "string") {
+        setTitleLine((prev) => ({
+          role: typeof data.role === "string" && data.role.trim() ? data.role.trim() : prev.role,
+          company:
+            typeof data.company === "string" && data.company.trim() ? data.company.trim() : prev.company,
+        }));
+      }
+      setRepopulateMessage("Profile repopulated from web.");
+      setHasRepopulatedSinceEdit(true);
+      router.refresh();
+    } catch {
+      setRepopulateMessage("Could not repopulate profile.");
+    } finally {
+      setRepopulating(false);
+    }
+  }
+
   return (
     <div className="detail-container" style={{ padding: "32px 40px", maxWidth: "1200px" }}>
       {/* Back button */}
@@ -738,19 +933,80 @@ export default function ContactDetailClient({
 
           {/* Info */}
           <div style={{ flex: 1, minWidth: "200px" }}>
-            <h1
+            <div
               style={{
-                fontSize: "26px",
-                fontWeight: "800",
-                color: "#111827",
-                letterSpacing: "-0.5px",
-                marginBottom: "4px",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                marginBottom: "6px",
+                flexWrap: "wrap",
               }}
             >
-              {contact.name}
-            </h1>
+              <input
+                value={nameDraft}
+                onChange={(e) => {
+                  setNameDraft(e.target.value);
+                  setNameMessage(null);
+                  setRepopulateMessage(null);
+                  setHasRepopulatedSinceEdit(false);
+                }}
+                style={{
+                  fontSize: "24px",
+                  fontWeight: 700,
+                  color: "#111827",
+                  letterSpacing: "-0.5px",
+                  border: "none",
+                  borderBottom: "1px solid #e5e7eb",
+                  padding: "2px 0",
+                  outline: "none",
+                  background: "transparent",
+                  minWidth: "160px",
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => { void saveName(); }}
+                disabled={!isDirty || savingName}
+                style={{
+                  padding: "4px 10px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  borderRadius: "999px",
+                  border: "1px solid #e5e7eb",
+                  background: isDirty && !savingName ? "#111827" : "#f9fafb",
+                  color: isDirty && !savingName ? "#f9fafb" : "#6b7280",
+                  cursor: !isDirty || savingName ? "default" : "pointer",
+                }}
+              >
+                {savingName ? "Saving..." : "Save"}
+              </button>
+              {isDirty && !hasRepopulatedSinceEdit && (
+                <button
+                  type="button"
+                  onClick={() => { void repopulateLinkedIn(); }}
+                  disabled={repopulating}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    borderRadius: "999px",
+                    border: "1px solid rgba(79,70,229,0.4)",
+                    background: "rgba(79,70,229,0.06)",
+                    color: "#4f46e5",
+                    cursor: repopulating ? "wait" : "pointer",
+                  }}
+                >
+                  {repopulating ? "Repopulating..." : "Repopulate from web"}
+                </button>
+              )}
+            </div>
+            {(nameMessage || repopulateMessage) && (
+              <div style={{ fontSize: "12px", color: nameMessage === "Saved." || repopulateMessage === "Profile repopulated from web." ? "#059669" : "#dc2626", marginBottom: "6px" }}>
+                {nameMessage || repopulateMessage}
+              </div>
+            )}
             <div style={{ fontSize: "15px", color: "#6b7280", marginBottom: "14px" }}>
-              {contact.role} at {contact.company}
+              {titleLine.role} at {titleLine.company}
             </div>
             <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
               <a
@@ -780,7 +1036,7 @@ export default function ContactDetailClient({
                 {contact.email}
               </a>
               <a
-                href={contact.linkedIn}
+                href={linkedInUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{
@@ -808,6 +1064,7 @@ export default function ContactDetailClient({
                 LinkedIn
               </a>
             </div>
+            {bioText.trim() ? <SnapshotCard text={bioText} /> : null}
           </div>
 
           {/* Tags + Strength */}
