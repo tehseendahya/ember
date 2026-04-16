@@ -6,7 +6,7 @@ This project now supports Google Calendar OAuth and syncs recent calendar events
 
 - OAuth connect flow via `GET /api/integrations/google-calendar/connect`
 - OAuth callback/token exchange via `GET /api/integrations/google-calendar/callback`
-- Access token persistence in `data/google-calendar-token.json`
+- Access token persistence in Supabase table `public.google_calendar_tokens`
 - Access token refresh using stored refresh token
 - Manual sync via `POST /api/integrations/google-calendar/sync`
 - Status endpoint via `GET /api/integrations/google-calendar/status`
@@ -44,8 +44,8 @@ Add these to `.env.local`:
 ## Security notes
 
 - Secrets are read from env vars only (no hardcoded credentials).
-- Access/refresh tokens are persisted in local `data/` files and should not be committed.
-- Production deployments should store tokens in an encrypted data store (DB + KMS/secrets manager).
+- Access/refresh tokens are persisted in Supabase.
+- For production, use encrypted secrets/KMS and tighten key management around service-role usage.
 
 ## Remaining TODOs for full production integration
 
@@ -65,4 +65,3 @@ Add these to `.env.local`:
   - Handle token revocation/re-consent UX.
   - Add retry/backoff for transient Google API failures.
   - Rotate and encrypt refresh tokens in persistent storage.
-

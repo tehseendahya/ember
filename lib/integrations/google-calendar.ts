@@ -1,14 +1,9 @@
 import "server-only";
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { randomUUID } from "crypto";
-import { join } from "path";
 import { requireUserId } from "@/lib/auth";
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-const DATA_DIR = join(process.cwd(), "data");
-const GOOGLE_TOKEN_PATH = join(DATA_DIR, "google-calendar-token.json");
-const OAUTH_STATE_PATH = join(DATA_DIR, "google-oauth-state.json");
 const GOOGLE_AUTH_BASE = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_CALENDAR_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
@@ -37,6 +32,7 @@ interface StoredGoogleToken {
 }
 
 interface StoredOAuthState {
+  userId: string;
   state: string;
   redirectTo?: string;
   expiresAt: number;
@@ -92,27 +88,25 @@ function getMissingConfig(): string[] {
   return missing;
 }
 
-function safeReadJSON<T>(path: string): T | null {
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, "utf-8")) as T;
-  } catch {
-    return null;
-  }
+async function readToken(userId: string): Promise<StoredGoogleToken | null> {
+  const supabase = await createSupabaseServerClient();
+  const { data } = await supabase
+    .from("google_calendar_tokens")
+    .select("access_token, expires_at, refresh_token, scope, token_type, updated_at")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!data) return null;
+  return {
+    accessToken: data.access_token,
+    expiresAt: new Date(data.expires_at).getTime(),
+    refreshToken: data.refresh_token ?? undefined,
+    scope: data.scope ?? undefined,
+    tokenType: data.token_type ?? undefined,
+    updatedAt: data.updated_at,
+  };
 }
 
-function writeJSON(path: string, value: unknown): void {
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true });
-  }
-  writeFileSync(path, JSON.stringify(value, null, 2), "utf-8");
-}
-
-function readToken(): StoredGoogleToken | null {
-  return safeReadJSON<StoredGoogleToken>(GOOGLE_TOKEN_PATH);
-}
-
-function writeToken(payload: GoogleTokenPayload, previous?: StoredGoogleToken | null): StoredGoogleToken {
+async function writeToken(userId: string, payload: GoogleTokenPayload, previous?: StoredGoogleToken | null): Promise<StoredGoogleToken> {
   const token: StoredGoogleToken = {
     accessToken: payload.access_token,
     expiresAt: Date.now() + payload.expires_in * 1000,
@@ -121,19 +115,48 @@ function writeToken(payload: GoogleTokenPayload, previous?: StoredGoogleToken | 
     tokenType: payload.token_type ?? previous?.tokenType ?? "Bearer",
     updatedAt: new Date().toISOString(),
   };
-  writeJSON(GOOGLE_TOKEN_PATH, token);
+  const supabase = await createSupabaseServerClient();
+  await supabase.from("google_calendar_tokens").upsert({
+    user_id: userId,
+    access_token: token.accessToken,
+    expires_at: new Date(token.expiresAt).toISOString(),
+    refresh_token: token.refreshToken ?? null,
+    scope: token.scope ?? null,
+    token_type: token.tokenType ?? "Bearer",
+    updated_at: token.updatedAt,
+  });
   return token;
 }
 
-function writeOAuthState(state: StoredOAuthState): void {
-  writeJSON(OAUTH_STATE_PATH, state);
+async function writeOAuthState(state: StoredOAuthState): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  await supabase.from("google_oauth_states").upsert({
+    user_id: state.userId,
+    state: state.state,
+    redirect_to: state.redirectTo ?? "/",
+    expires_at: new Date(state.expiresAt).toISOString(),
+    created_at: state.createdAt,
+  });
 }
 
-function readOAuthState(): StoredOAuthState | null {
-  return safeReadJSON<StoredOAuthState>(OAUTH_STATE_PATH);
+async function readOAuthState(userId: string): Promise<StoredOAuthState | null> {
+  const supabase = await createSupabaseServerClient();
+  const { data } = await supabase
+    .from("google_oauth_states")
+    .select("state, redirect_to, expires_at, created_at")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!data) return null;
+  return {
+    userId,
+    state: data.state,
+    redirectTo: data.redirect_to ?? undefined,
+    expiresAt: new Date(data.expires_at).getTime(),
+    createdAt: data.created_at,
+  };
 }
 
-async function exchangeCodeForToken(code: string): Promise<StoredGoogleToken> {
+async function exchangeCodeForToken(code: string, userId: string): Promise<StoredGoogleToken> {
   const clientId = getRequiredEnv("GOOGLE_CLIENT_ID");
   const clientSecret = getRequiredEnv("GOOGLE_CLIENT_SECRET");
   const redirectUri = getRequiredEnv("GOOGLE_REDIRECT_URI");
@@ -159,10 +182,10 @@ async function exchangeCodeForToken(code: string): Promise<StoredGoogleToken> {
     throw new Error(`Google token exchange failed: ${details}`);
   }
   const token = (await res.json()) as GoogleTokenPayload;
-  return writeToken(token, readToken());
+  return writeToken(userId, token, await readToken(userId));
 }
 
-async function refreshAccessTokenIfNeeded(token: StoredGoogleToken): Promise<StoredGoogleToken> {
+async function refreshAccessTokenIfNeeded(token: StoredGoogleToken, userId: string): Promise<StoredGoogleToken> {
   const skewMs = 60 * 1000;
   if (token.expiresAt > Date.now() + skewMs) return token;
   if (!token.refreshToken) {
@@ -190,15 +213,15 @@ async function refreshAccessTokenIfNeeded(token: StoredGoogleToken): Promise<Sto
     throw new Error(`Google token refresh failed: ${details}`);
   }
   const refreshed = (await res.json()) as GoogleTokenPayload;
-  return writeToken(refreshed, token);
+  return writeToken(userId, refreshed, token);
 }
 
-async function getUsableAccessToken(): Promise<StoredGoogleToken> {
-  const stored = readToken();
+async function getUsableAccessToken(userId: string): Promise<StoredGoogleToken> {
+  const stored = await readToken(userId);
   if (!stored) {
     throw new Error("Google Calendar is not connected.");
   }
-  return refreshAccessTokenIfNeeded(stored);
+  return refreshAccessTokenIfNeeded(stored, userId);
 }
 
 function eventDate(event: GoogleCalendarEvent): string | null {
@@ -218,9 +241,9 @@ function toReminderText(event: GoogleCalendarEvent): string {
 
 export async function getGoogleIntegrationStatus(): Promise<GoogleIntegrationStatus> {
   const missingConfig = getMissingConfig();
-  const token = readToken();
   const userId = await requireUserId();
-  const supabase = createSupabaseAdminClient();
+  const token = await readToken(userId);
+  const supabase = await createSupabaseServerClient();
   const { data: updates } = await supabase
     .from("recent_updates")
     .select("timestamp, actions")
@@ -237,14 +260,16 @@ export async function getGoogleIntegrationStatus(): Promise<GoogleIntegrationSta
   };
 }
 
-export function buildGoogleAuthUrl(redirectTo?: string): string {
+export async function buildGoogleAuthUrl(redirectTo?: string): Promise<string> {
   const clientId = getRequiredEnv("GOOGLE_CLIENT_ID");
   const redirectUri = getRequiredEnv("GOOGLE_REDIRECT_URI");
   if (!clientId || !redirectUri) {
     throw new Error("Google OAuth config missing");
   }
+  const userId = await requireUserId();
   const state = randomUUID();
-  writeOAuthState({
+  await writeOAuthState({
+    userId,
     state,
     redirectTo: redirectTo?.trim() ? redirectTo : "/",
     createdAt: new Date().toISOString(),
@@ -264,11 +289,12 @@ export function buildGoogleAuthUrl(redirectTo?: string): string {
 }
 
 export async function handleGoogleOAuthCallback(code: string, state: string): Promise<{ redirectTo: string }> {
-  const saved = readOAuthState();
+  const userId = await requireUserId();
+  const saved = await readOAuthState(userId);
   if (!saved || saved.state !== state || saved.expiresAt < Date.now()) {
     throw new Error("OAuth state mismatch or expired");
   }
-  await exchangeCodeForToken(code);
+  await exchangeCodeForToken(code, userId);
   return { redirectTo: saved.redirectTo ?? "/" };
 }
 
@@ -285,9 +311,10 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
     };
   }
 
+  const userId = await requireUserId();
   let token: StoredGoogleToken;
   try {
-    token = await getUsableAccessToken();
+    token = await getUsableAccessToken(userId);
   } catch (err) {
     return {
       ok: false,
@@ -327,8 +354,7 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
 
   const payload = (await res.json()) as { items?: GoogleCalendarEvent[] };
   const events = (payload.items ?? []).filter((event) => event.status !== "cancelled");
-  const userId = await requireUserId();
-  const supabase = createSupabaseAdminClient();
+  const supabase = await createSupabaseServerClient();
   const { data: existingReminders } = await supabase
     .from("reminders")
     .select("*")

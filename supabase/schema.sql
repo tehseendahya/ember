@@ -102,6 +102,33 @@ create table if not exists public.second_degree_edges (
 create index if not exists second_degree_edges_user_intro_idx on public.second_degree_edges(user_id, introducer_contact_id);
 create index if not exists second_degree_edges_user_target_idx on public.second_degree_edges(user_id, target_name);
 
+-- User-level settings and cached recommendations
+create table if not exists public.user_settings (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  profile_context text not null default '',
+  reach_out_recommendation jsonb,
+  updated_at timestamptz not null default now()
+);
+
+-- Google Calendar integration credentials/state
+create table if not exists public.google_calendar_tokens (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  access_token text not null,
+  refresh_token text,
+  expires_at timestamptz not null,
+  scope text,
+  token_type text not null default 'Bearer',
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.google_oauth_states (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  state text not null,
+  redirect_to text not null default '/',
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+
 -- Keep updated_at fresh
 create or replace function public.set_updated_at()
 returns trigger
@@ -126,6 +153,9 @@ alter table public.reminders enable row level security;
 alter table public.recent_updates enable row level security;
 alter table public.contact_snoozes enable row level security;
 alter table public.second_degree_edges enable row level security;
+alter table public.user_settings enable row level security;
+alter table public.google_calendar_tokens enable row level security;
+alter table public.google_oauth_states enable row level security;
 
 create policy "contacts own rows" on public.contacts
 for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
@@ -143,4 +173,13 @@ create policy "contact_snoozes own rows" on public.contact_snoozes
 for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 create policy "second_degree_edges own rows" on public.second_degree_edges
+for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create policy "user_settings own rows" on public.user_settings
+for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create policy "google_calendar_tokens own rows" on public.google_calendar_tokens
+for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create policy "google_oauth_states own rows" on public.google_oauth_states
 for all using (auth.uid() = user_id) with check (auth.uid() = user_id);

@@ -4,16 +4,14 @@
 -- Then set it below before running.
 do $$
 declare
-  target_user_id uuid := '00000000-0000-0000-0000-000000000000';
+  target_user_id uuid := 'cce1bfc5-a262-4634-94e0-a523b0ed1d34';
   c_justin uuid := gen_random_uuid();
   c_sarah uuid := gen_random_uuid();
   c_michael uuid := gen_random_uuid();
   c_emily uuid := gen_random_uuid();
   c_ben uuid := gen_random_uuid();
 begin
-  if target_user_id = '00000000-0000-0000-0000-000000000000'::uuid then
-    raise exception 'Set target_user_id in supabase/seed.sql before running.';
-  end if;
+  -- target_user_id set for tdahya2@gmail.com
 
   insert into public.contacts (
     id, user_id, name, email, company, role, linkedin, avatar, avatar_color, tags,
@@ -67,4 +65,12 @@ begin
     (target_user_id, c_justin, 'Nina Sharma', 'Sequoia Capital', 'Partner', 'intro_offer', 5, '2026-01-15', 'Justin offered a warm intro after Q2 metrics.', 'import'),
     (target_user_id, c_sarah, 'Jeff Dean', 'Google DeepMind', 'Chief Scientist', 'colleague', 4, '2026-02-03', 'Sarah knows Jeff from internal PM/Research workstreams.', 'import'),
     (target_user_id, c_ben, 'Rachel Kim', 'Figma', 'Head of Design', 'friend', 4, '2026-03-10', 'Ben made a prior intro for design feedback.', 'import');
+
+  insert into public.user_settings (user_id, profile_context, reach_out_recommendation) values
+    (
+      target_user_id,
+      'Founder building AI infrastructure products. Priorities: warm investor intros, enterprise design partners, and top AI engineering hires.',
+      null
+    )
+  on conflict (user_id) do update set profile_context = excluded.profile_context, reach_out_recommendation = excluded.reach_out_recommendation;
 end $$;
