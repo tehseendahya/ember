@@ -8,7 +8,9 @@ const GOOGLE_AUTH_BASE = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_CALENDAR_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 
-/** Events with start ≥ (now − this many days) are included. */
+/**
+ * Past-only sync window: we query [now − N days, now] so recurring series do not expand into the future forever.
+ */
 const SYNC_LOOKBACK_DAYS = 14;
 /** Google allows up to 2500; we paginate until no nextPageToken (fixes the old maxResults=50 cap). */
 const SYNC_PAGE_SIZE = 250;
@@ -312,6 +314,7 @@ function participantConfidence(name: string, email: string | null, summaryOnly: 
 }
 
 const MEETING_PREFIXES = [
+  "catch up",
   "call",
   "meeting",
   "sync",
@@ -404,7 +407,51 @@ function excerptFromExaHit(hit: { title?: string; highlights?: string[]; text?: 
   return hit.title ?? "";
 }
 
-function scoreLinkedInHitForName(hit: { title?: string; url?: string }, name: string): number {
+/** First segment of a LinkedIn SERP title is usually "First Last — headline…". */
+function parseFullNameFromLinkedInTitle(title: string | undefined): string | null {
+  if (!title) return null;
+  const cleaned = title.replace(/\s*\|\s*LinkedIn.*$/i, "").trim();
+  const firstSeg = cleaned.split(/\s*[-–—]\s/)[0]?.trim() ?? "";
+  if (!firstSeg || firstSeg.length < 3) return null;
+  if (looksLikePersonNameFlexible(firstSeg, false)) return titleCaseWords(firstSeg);
+  const parts = firstSeg.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2 && looksLikePersonNameFlexible(firstSeg, true)) return titleCaseWords(firstSeg);
+  return null;
+}
+
+function emailLocalSearchSlug(email: string | null): string {
+  if (!email) return "";
+  const local = email.split("@")[0] ?? "";
+  const alpha = local.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  if (alpha.length < 4) return "";
+  return alpha;
+}
+
+/** Lowercase alphanumeric from work email domain (e.g. majente.com → majente). Empty for personal providers. */
+function workEmailDomainSlug(email: string | null): string {
+  if (!email) return "";
+  const domain = email.split("@")[1]?.toLowerCase() ?? "";
+  if (!domain) return "";
+  if (/(gmail\.com|outlook\.com|hotmail\.com|yahoo\.com|icloud\.com|proton\.me|protonmail\.com)$/i.test(domain)) {
+    return "";
+  }
+  const base = domain.split(".")[0] ?? "";
+  return base.replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function companyHintToSlug(hint: string): string {
+  return hint.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+type LinkedInScoreOpts = {
+  emailLocalSlug?: string;
+  /** From work email domain — strongest tie-break for common names (e.g. Ryan Johnson @majente.com). */
+  workDomainSlug?: string;
+  /** From merged company hint when distinct from workDomainSlug. */
+  companyHintSlug?: string;
+};
+
+function scoreLinkedInHitForName(hit: { title?: string; url?: string }, name: string, opts: LinkedInScoreOpts = {}): number {
   const tokens = name
     .toLowerCase()
     .split(/\s+/)
@@ -418,6 +465,27 @@ function scoreLinkedInHitForName(hit: { title?: string; url?: string }, name: st
     if (title.includes(t)) score += 4;
   }
   if (tokens[0] && !title.includes(tokens[0]) && !slug.includes(tokens[0])) score -= 8;
+
+  const { emailLocalSlug, workDomainSlug, companyHintSlug } = opts;
+
+  if (workDomainSlug && workDomainSlug.length >= 3) {
+    if (slug.includes(workDomainSlug)) score += 32;
+    if (title.includes(workDomainSlug)) score += 22;
+  }
+
+  if (companyHintSlug && companyHintSlug.length >= 3 && companyHintSlug !== workDomainSlug) {
+    if (slug.includes(companyHintSlug)) score += 18;
+    if (title.includes(companyHintSlug)) score += 12;
+  }
+
+  if (emailLocalSlug && emailLocalSlug.length >= 4) {
+    const hasWorkDomain = Boolean(workDomainSlug && workDomainSlug.length >= 3);
+    const shortGenericLocal = hasWorkDomain && emailLocalSlug.length < 8;
+    if (!shortGenericLocal) {
+      if (slug.includes(emailLocalSlug)) score += 28;
+      if (title.includes(emailLocalSlug)) score += 18;
+    }
+  }
   return score;
 }
 
@@ -427,6 +495,8 @@ export interface PersonWebResult {
   bio: string | null;
   /** Exa/LinkedIn hit title, e.g. "Name - Role - Company | LinkedIn" — helps set role/company. */
   sourceTitle: string | null;
+  /** Full name parsed from the chosen LinkedIn result title when better than a first-name-only input. */
+  resolvedFullName: string | null;
 }
 
 /**
@@ -439,18 +509,32 @@ export async function resolvePersonFromWeb(
   email: string | null,
 ): Promise<PersonWebResult> {
   const trimmed = name.trim();
-  const fallbackHint = companyHint || companyFromEmailDomain(email);
+  const emailCompanyHint = companyFromEmailDomain(email);
+  const fallbackHint = emailCompanyHint || companyHint.trim();
   const fallbackSearch = linkedInSearchUrl(trimmed, fallbackHint);
   if (!trimmed) {
-    return { linkedin: fallbackSearch, bio: null, sourceTitle: null };
+    return { linkedin: fallbackSearch, bio: null, sourceTitle: null, resolvedFullName: null };
   }
 
   const exaKey = process.env.EXA_API_KEY?.trim();
   if (!exaKey) {
-    return { linkedin: fallbackSearch, bio: null, sourceTitle: null };
+    return { linkedin: fallbackSearch, bio: null, sourceTitle: null, resolvedFullName: null };
   }
 
-  const query = [trimmed, fallbackHint, "linkedin"].filter(Boolean).join(" ");
+  const emailLocalSlug = emailLocalSearchSlug(email);
+  const workDomainSlug = workEmailDomainSlug(email);
+  const companyHintSlugRaw = companyHintToSlug(fallbackHint);
+  const companyHintSlug =
+    companyHintSlugRaw && companyHintSlugRaw !== workDomainSlug ? companyHintSlugRaw : undefined;
+
+  const queryParts = [trimmed];
+  if (fallbackHint.trim()) queryParts.push(fallbackHint.trim());
+  if (workDomainSlug && !fallbackHint.toLowerCase().replace(/[^a-z0-9]/g, "").includes(workDomainSlug)) {
+    queryParts.push(workDomainSlug);
+  }
+  if (emailLocalSlug) queryParts.push(emailLocalSlug);
+  queryParts.push("linkedin");
+  const query = queryParts.join(" ");
 
   try {
     const res = await fetch(EXA_URL, {
@@ -471,7 +555,7 @@ export async function resolvePersonFromWeb(
       cache: "no-store",
     });
     if (!res.ok) {
-      return { linkedin: fallbackSearch, bio: null, sourceTitle: null };
+      return { linkedin: fallbackSearch, bio: null, sourceTitle: null, resolvedFullName: null };
     }
     const data = (await res.json()) as {
       results?: Array<{ url?: string; title?: string; highlights?: string[]; text?: string }>;
@@ -483,22 +567,31 @@ export async function resolvePersonFromWeb(
       const any = hits[0];
       if (any?.url && /linkedin\.com\/in\//i.test(any.url)) {
         const bio = excerptFromExaHit(any).slice(0, 1200) || null;
-        return { linkedin: any.url, bio, sourceTitle: any.title ?? null };
+        const resolvedFullName = parseFullNameFromLinkedInTitle(any.title);
+        return { linkedin: any.url, bio, sourceTitle: any.title ?? null, resolvedFullName };
       }
-      return { linkedin: fallbackSearch, bio: null, sourceTitle: null };
+      return { linkedin: fallbackSearch, bio: null, sourceTitle: null, resolvedFullName: null };
     }
 
     const scored = linkedInHits
-      .map((h) => ({ hit: h, score: scoreLinkedInHitForName(h, trimmed) }))
+      .map((h) => ({
+        hit: h,
+        score: scoreLinkedInHitForName(h, trimmed, {
+          emailLocalSlug,
+          workDomainSlug,
+          companyHintSlug,
+        }),
+      }))
       .sort((a, b) => b.score - a.score);
     const best = scored[0]?.hit;
     if (!best?.url) {
-      return { linkedin: fallbackSearch, bio: null, sourceTitle: null };
+      return { linkedin: fallbackSearch, bio: null, sourceTitle: null, resolvedFullName: null };
     }
     const bio = excerptFromExaHit(best).slice(0, 1200) || null;
-    return { linkedin: best.url, bio, sourceTitle: best.title ?? null };
+    const resolvedFullName = parseFullNameFromLinkedInTitle(best.title);
+    return { linkedin: best.url, bio, sourceTitle: best.title ?? null, resolvedFullName };
   } catch {
-    return { linkedin: fallbackSearch, bio: null, sourceTitle: null };
+    return { linkedin: fallbackSearch, bio: null, sourceTitle: null, resolvedFullName: null };
   }
 }
 
@@ -518,19 +611,39 @@ function looksLikePersonNameFlexible(value: string, allowSingleToken: boolean): 
   return parts.every((part) => /^[A-Za-z][A-Za-z.'-]*$/.test(part));
 }
 
+/** Reject phrases that match "name" heuristics but are not real people (e.g. event titles). */
+function isBogusExtractedPersonName(name: string): boolean {
+  const t = name.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!t) return true;
+  if (/^(an?|the|my)\s+old\s+friend$/i.test(t)) return true;
+  if (/^a\s+friend$/i.test(t)) return true;
+  if (/^old\s+friend$/i.test(t)) return true;
+  if (/^(some|any)one$/i.test(t)) return true;
+  if (/^the\s+team$/i.test(t)) return true;
+  if (/^a\s+colleague$/i.test(t)) return true;
+  if (/^(an?\s+)?(old\s+)?friend$/i.test(t)) return true;
+  return false;
+}
+
 function extractNameFromSummary(summary: string): string {
   const normalized = summary.replace(/[-–:|]/g, " ").replace(/\s+/g, " ").trim();
   const withPattern = normalized.match(/\b(?:with|w\/)\s+([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){0,2})\b/i);
   if (withPattern?.[1]) {
     const candidate = normalizePersonCandidate(withPattern[1]);
-    if (looksLikePersonNameFlexible(candidate, true)) return titleCaseWords(candidate);
+    if (looksLikePersonNameFlexible(candidate, true)) {
+      const titled = titleCaseWords(candidate);
+      if (!isBogusExtractedPersonName(titled)) return titled;
+    }
   }
   for (const prefix of MEETING_PREFIXES) {
-    const rx = new RegExp(`\\b${prefix}\\s+([A-Za-z][A-Za-z.'-]*(?:\\s+[A-Za-z][A-Za-z.'-]*){0,2})\\b`, "i");
+    const rx = new RegExp(`\\b${prefix.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\s+([A-Za-z][A-Za-z.'-]*(?:\\s+[A-Za-z][A-Za-z.'-]*){0,2})\\b`, "i");
     const m = normalized.match(rx);
     if (m?.[1]) {
       const candidate = normalizePersonCandidate(m[1]);
-      if (looksLikePersonNameFlexible(candidate, true)) return titleCaseWords(candidate);
+      if (looksLikePersonNameFlexible(candidate, true)) {
+        const titled = titleCaseWords(candidate);
+        if (!isBogusExtractedPersonName(titled)) return titled;
+      }
     }
   }
   return "";
@@ -589,7 +702,7 @@ function isLikelyPeopleMeeting(event: GoogleCalendarEvent): boolean {
   const participants = extractParticipants(event);
   if (participants.length > 0) return true;
   const summary = event.summary?.trim() ?? "";
-  return /\b(1:1|coffee|lunch|dinner|meet|intro|call|sync|chat|zoom)\b/i.test(summary);
+  return /\b(1:1|coffee|lunch|dinner|meet|intro|call|sync|chat|catch|catchup|zoom)\b/i.test(summary);
 }
 
 function syncSkipReason(event: GoogleCalendarEvent, date: string | null): string {
@@ -598,12 +711,16 @@ function syncSkipReason(event: GoogleCalendarEvent, date: string | null): string
   if (!isLikelyPeopleMeeting(event)) {
     if (!event.start?.dateTime) return "all-day only (start.date) — sync uses timed events with start.dateTime";
     const summary = event.summary?.trim() ?? "(no title)";
-    return `no extractable person + title has no trigger word (1:1 coffee lunch dinner meet intro call sync chat zoom): "${summary.slice(0, 100)}"`;
+    return `no extractable person + title has no trigger word (1:1 coffee lunch dinner meet intro call sync chat catch zoom): "${summary.slice(0, 100)}"`;
   }
   return "";
 }
 
-async function fetchPrimaryCalendarEvents(accessToken: string, timeMinIso: string): Promise<{
+async function fetchPrimaryCalendarEvents(
+  accessToken: string,
+  timeMinIso: string,
+  timeMaxIso: string,
+): Promise<{
   events: GoogleCalendarEvent[];
   pages: number;
 }> {
@@ -616,6 +733,7 @@ async function fetchPrimaryCalendarEvents(accessToken: string, timeMinIso: strin
     eventsUrl.searchParams.set("singleEvents", "true");
     eventsUrl.searchParams.set("orderBy", "startTime");
     eventsUrl.searchParams.set("timeMin", timeMinIso);
+    eventsUrl.searchParams.set("timeMax", timeMaxIso);
     eventsUrl.searchParams.set("maxResults", String(SYNC_PAGE_SIZE));
     if (pageToken) eventsUrl.searchParams.set("pageToken", pageToken);
     const res = await fetch(eventsUrl.toString(), {
@@ -721,18 +839,20 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
     };
   }
 
-  const since = new Date();
+  const now = new Date();
+  const timeMax = now.toISOString();
+  const since = new Date(now);
   since.setDate(since.getDate() - SYNC_LOOKBACK_DAYS);
   const timeMin = since.toISOString();
 
   console.log(
-    `[GCal sync] Query: calendars/primary/events · timeMin=${timeMin} (now − ${SYNC_LOOKBACK_DAYS} days), no timeMax (all events after that), singleEvents=true, orderBy=startTime, pageSize=${SYNC_PAGE_SIZE}, paginate until exhausted.`,
+    `[GCal sync] Query: calendars/primary/events · timeMin=${timeMin} · timeMax=${timeMax} (past-only window: now − ${SYNC_LOOKBACK_DAYS}d … now), singleEvents=true, orderBy=startTime, pageSize=${SYNC_PAGE_SIZE}, paginate until exhausted.`,
   );
 
   let events: GoogleCalendarEvent[];
   let pageCount: number;
   try {
-    const fetched = await fetchPrimaryCalendarEvents(token.accessToken, timeMin);
+    const fetched = await fetchPrimaryCalendarEvents(token.accessToken, timeMin, timeMax);
     events = fetched.events;
     pageCount = fetched.pages;
   } catch (err) {
@@ -839,7 +959,7 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
       const normalizedName = participant.name.trim().toLowerCase();
       const summaryCompanyHint = companyHintFromSummary(title);
       const emailCompanyHint = companyFromEmailDomain(participant.email);
-      const companyHint = summaryCompanyHint || emailCompanyHint;
+      const companyHint = emailCompanyHint || summaryCompanyHint;
 
       const contactMatch =
         (participant.email ? contactsByEmail.get(participant.email) : null) ??
@@ -884,14 +1004,9 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
       }
 
       let contactId = contactMatch?.id ?? null;
+      let contactDisplayName = contactMatch?.name ?? participant.name;
       if (!contactId) {
         contactId = randomUUID();
-        const avatar = participant.name
-          .split(" ")
-          .filter(Boolean)
-          .slice(0, 2)
-          .map((p) => p[0]?.toUpperCase() ?? "")
-          .join("") || "?";
         const { enrichContactFromWeb } = await import("@/lib/integrations/enrich-contact-from-web");
         const enriched = await enrichContactFromWeb({
           name: participant.name,
@@ -904,10 +1019,25 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
             notes: "",
           },
         });
+        const resolved = enriched.resolvedFullName?.trim() ?? "";
+        const contactName =
+          resolved &&
+          resolved.split(/\s+/).length >= 2 &&
+          participant.name.trim().toLowerCase() === resolved.split(/\s+/)[0]?.toLowerCase()
+            ? resolved
+            : participant.name;
+        contactDisplayName = contactName;
+        const avatar =
+          contactName
+            .split(" ")
+            .filter(Boolean)
+            .slice(0, 2)
+            .map((p) => p[0]?.toUpperCase() ?? "")
+            .join("") || "?";
         await supabase.from("contacts").insert({
           id: contactId,
           user_id: userId,
-          name: participant.name,
+          name: contactName,
           email: participant.email ?? "",
           company: enriched.company || companyHint,
           role: enriched.role,
@@ -922,8 +1052,8 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
           connection_strength: 2,
           mutual_connections: [],
         });
-        if (participant.email) contactsByEmail.set(participant.email, { id: contactId, name: participant.name });
-        contactsByName.set(normalizedName, { id: contactId, name: participant.name });
+        if (participant.email) contactsByEmail.set(participant.email, { id: contactId, name: contactName });
+        contactsByName.set(contactName.trim().toLowerCase(), { id: contactId, name: contactName });
       } else {
         await supabase
           .from("contacts")
@@ -958,11 +1088,13 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
         });
       }
 
-      const reminderKey = participant.email ? `${event.id}:${participant.email}` : `${event.id}:${normalizedName}`;
+      const reminderKey = participant.email
+        ? `${event.id}:${participant.email}`
+        : `${event.id}:${contactDisplayName.trim().toLowerCase().slice(0, 80)}`;
       const existing = (existingReminders ?? []).find(
         (reminder) => reminder.source === "google_calendar" && reminder.external_event_id === reminderKey,
       );
-      const text = `Follow up with ${participant.name}: ${title}`;
+      const text = `Follow up with ${contactDisplayName}: ${title}`;
       if (existing) {
         await supabase
           .from("reminders")

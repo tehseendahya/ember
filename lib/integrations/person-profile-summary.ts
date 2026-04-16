@@ -17,6 +17,7 @@ function fallbackSummary(input: {
   rawExcerpt: string;
   linkedInResultTitle: string | null;
   relationshipContext: string;
+  workDomainCompany?: string | null;
 }): { role: string; company: string; notes: string } {
   const title = input.linkedInResultTitle?.replace(/\s*\|\s*LinkedIn.*$/i, "").trim() ?? "";
   let role = "";
@@ -48,9 +49,15 @@ function fallbackSummary(input: {
 
   const notes = bullets.slice(0, 4).map((b) => `• ${b.replace(/^•\s*/, "")}`).join("\n");
 
+  const orgFromEmail = input.workDomainCompany?.trim();
+  const companyOut =
+    (company && company !== "Unknown company" ? company : "") ||
+    orgFromEmail ||
+    "Unknown company";
+
   return {
     role: role || "Unknown role",
-    company: company || "Unknown company",
+    company: companyOut,
     notes,
   };
 }
@@ -63,6 +70,13 @@ export async function summarizePersonForCrm(input: {
   rawExcerpt: string;
   linkedInResultTitle: string | null;
   relationshipContext: string;
+  /** When present, helps disambiguate common first names. */
+  email?: string | null;
+  /**
+   * Human label from work email domain (non-generic mail only), e.g. "Majente" for @majente.com.
+   * Strong signal for which person + employer when the name is common.
+   */
+  workDomainCompany?: string | null;
 }): Promise<{ role: string; company: string; notes: string }> {
   const key = process.env.OPENAI_API_KEY?.trim();
   if (!key) {
@@ -74,7 +88,19 @@ export async function summarizePersonForCrm(input: {
 
   const system = `You format web search snippets into a compact CRM profile. Reply with JSON only. Be concise. No markdown headers or bullet symbols in string values.`;
 
+  const emailLine = input.email?.trim()
+    ? `INVITEE_EMAIL: ${input.email.trim()}`
+    : "INVITEE_EMAIL: (none)";
+
+  const workOrgLine = input.workDomainCompany?.trim()
+    ? `WORK_ORGANIZATION_FROM_EMAIL (this invitee uses a work domain — treat as the likely employer when choosing which "${input.name}" the text describes; if RAW_WEB_TEXT clearly describes a different person, say so in bullets instead): ${input.workDomainCompany.trim()}`
+    : "WORK_ORGANIZATION_FROM_EMAIL: (none — personal email or missing)";
+
   const user = `Person name: ${input.name}
+
+${emailLine}
+
+${workOrgLine}
 
 LINKEDIN_SEARCH_RESULT_TITLE (may help disambiguate role/company; may be empty):
 ${input.linkedInResultTitle ?? "(none)"}
@@ -85,7 +111,7 @@ ${input.rawExcerpt.slice(0, 8000)}
 HOW_THE_USER_KNOWS_THEM (from CRM: last touch, meetings, tags — use for the relationship bullet only):
 ${input.relationshipContext.trim() || "Not specified — use one short line asking to add how they know each other."}
 
-Important: Infer "role" and "company" only from RAW_WEB_TEXT and LINKEDIN_SEARCH_RESULT_TITLE (their current work). Ignore any wrong employer that might have been stored in CRM before.
+Important: Infer "role" and "company" primarily from RAW_WEB_TEXT and LINKEDIN_SEARCH_RESULT_TITLE. When WORK_ORGANIZATION_FROM_EMAIL is set and the text matches that organization (or the LinkedIn title does), use that organization for "company" and roles consistent with it. If RAW_WEB_TEXT is clearly about a different employer than WORK_ORGANIZATION_FROM_EMAIL, prefer the text but mention the mismatch briefly in one bullet. Ignore stale employers that might have been stored in CRM before.
 
 Return this JSON shape:
 {"role":"short current job title only","company":"primary organization they work for now","bullets":["Education / school — one short line, or Unknown","Past experience — one short line","What they are doing now — one short line","Relationship — based on HOW_THE_USER_KNOWS_THEM; if empty say they should add context in CRM"]}
@@ -94,7 +120,8 @@ Hard rules:
 - bullets: exactly 4 items, each max 130 characters, plain sentences (no leading dashes or #).
 - role and company must reflect current work from the text when possible (not stale employers unless RAW_WEB_TEXT only mentions those).
 - Do not copy long hashtags or section titles verbatim; paraphrase.
-- If RAW_WEB_TEXT clearly describes someone different from the name, still extract what matches ${input.name} best.`;
+- If several people could match ${input.name}, prefer the profile consistent with WORK_ORGANIZATION_FROM_EMAIL when it is set.
+- If RAW_WEB_TEXT clearly describes a different person than this invitee, say so briefly in one bullet.`;
 
   try {
     const res = await fetch(OPENAI_URL, {

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { resolvePersonFromWeb } from "@/lib/integrations/google-calendar";
+import { companyFromEmailDomain, resolvePersonFromWeb } from "@/lib/integrations/google-calendar";
 import { summarizePersonForCrm } from "@/lib/integrations/person-profile-summary";
 
 export type EnrichContactFromWebInput = {
@@ -18,18 +18,34 @@ export type EnrichContactFromWebResult = {
   company: string;
   notes: string;
   snapshotFromWeb: boolean;
+  /** When Exa/LinkedIn yields a full name (e.g. "Max Tabachnik") better than first-name-only input. */
+  resolvedFullName: string | null;
 };
+
+function shouldUpgradeNameToResolved(current: string, resolved: string | null | undefined): boolean {
+  const r = resolved?.trim() ?? "";
+  if (!r) return false;
+  const rParts = r.split(/\s+/).filter(Boolean);
+  if (rParts.length < 2) return false;
+  const c = current.trim().toLowerCase();
+  if (c === r.toLowerCase()) return false;
+  return c === rParts[0].toLowerCase();
+}
 
 /**
  * Resolve LinkedIn + optional snapshot bullets (role, company, notes) from web search + LLM.
  * Shared by repopulate, calendar sync, and manual contact creation.
  */
 export async function enrichContactFromWeb(input: EnrichContactFromWebInput): Promise<EnrichContactFromWebResult> {
-  const { linkedin, bio, sourceTitle } = await resolvePersonFromWeb(
+  const { linkedin, bio, sourceTitle, resolvedFullName } = await resolvePersonFromWeb(
     input.name,
     input.companyHint,
     input.email,
   );
+  const nameForSummary =
+    resolvedFullName?.trim() && shouldUpgradeNameToResolved(input.name, resolvedFullName)
+      ? resolvedFullName.trim()
+      : input.name.trim();
   const hasText = Boolean(bio?.trim()) || Boolean(sourceTitle?.trim());
   if (!hasText) {
     return {
@@ -38,10 +54,13 @@ export async function enrichContactFromWeb(input: EnrichContactFromWebInput): Pr
       company: input.whenNoWebData.company,
       notes: input.whenNoWebData.notes,
       snapshotFromWeb: false,
+      resolvedFullName: resolvedFullName ?? null,
     };
   }
   const summarized = await summarizePersonForCrm({
-    name: input.name,
+    name: nameForSummary,
+    email: input.email,
+    workDomainCompany: companyFromEmailDomain(input.email),
     rawExcerpt: bio ?? "",
     linkedInResultTitle: sourceTitle,
     relationshipContext: input.relationshipContext,
@@ -52,5 +71,8 @@ export async function enrichContactFromWeb(input: EnrichContactFromWebInput): Pr
     company: summarized.company,
     notes: summarized.notes,
     snapshotFromWeb: true,
+    resolvedFullName: resolvedFullName ?? null,
   };
 }
+
+export { shouldUpgradeNameToResolved };

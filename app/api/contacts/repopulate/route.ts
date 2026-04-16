@@ -3,7 +3,7 @@ import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { requireUserId } from "@/lib/auth";
 import { companyFromEmailDomain } from "@/lib/integrations/google-calendar";
-import { enrichContactFromWeb } from "@/lib/integrations/enrich-contact-from-web";
+import { enrichContactFromWeb, shouldUpgradeNameToResolved } from "@/lib/integrations/enrich-contact-from-web";
 
 export async function POST(req: NextRequest) {
   try {
@@ -40,7 +40,8 @@ export async function POST(req: NextRequest) {
       .order("date", { ascending: false })
       .limit(4);
 
-    const companyHint = contact.company?.trim() || companyFromEmailDomain(contact.email ?? "");
+    const companyHint =
+      companyFromEmailDomain(contact.email ?? "") || contact.company?.trim() || "";
     const effectiveName =
       typeof nameOverride === "string" && nameOverride.trim().length > 0
         ? nameOverride.trim()
@@ -71,6 +72,13 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    const nameAfterEnrich =
+      typeof nameOverride === "string" && nameOverride.trim().length > 0
+        ? effectiveName
+        : shouldUpgradeNameToResolved(effectiveName, enriched.resolvedFullName) && enriched.resolvedFullName?.trim()
+          ? enriched.resolvedFullName.trim()
+          : effectiveName;
+
     const updatePayload: {
       linkedin: string;
       role: string;
@@ -83,8 +91,8 @@ export async function POST(req: NextRequest) {
       company: enriched.company,
       notes: enriched.notes,
     };
-    if (effectiveName.trim() && effectiveName.trim() !== contact.name.trim()) {
-      updatePayload.name = effectiveName.trim();
+    if (nameAfterEnrich.trim() && nameAfterEnrich.trim() !== contact.name.trim()) {
+      updatePayload.name = nameAfterEnrich.trim();
     }
 
     const { error: updateError } = await supabase
