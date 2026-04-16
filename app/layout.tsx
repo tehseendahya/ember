@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import Sidebar from "@/components/Sidebar";
+import AppShell from "@/components/AppShell";
 
 export const metadata: Metadata = {
   title: "Ember — Personal CRM",
@@ -21,12 +21,7 @@ export default function RootLayout({
         suppressHydrationWarning
         style={{ background: "#ffffff", color: "#111827", fontFamily: "'Inter', system-ui, sans-serif" }}
       >
-        <div style={{ display: "flex", minHeight: "100vh" }}>
-          <Sidebar />
-          <main style={{ flex: 1, minHeight: "100vh", overflowY: "auto" }}>
-            {children}
-          </main>
-        </div>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );
