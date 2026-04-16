@@ -2,3 +2,5 @@ node_modules
 .next
 .env.local
 .pnpm-store/
+.DS_Store
+*.tsbuildinfo
