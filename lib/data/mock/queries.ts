@@ -1,11 +1,11 @@
 import type { EmailStats, ExtendedProfile, NetworkEdge, WorldSearchResult } from "@/lib/types";
-import { buildExtendedConnectionsMap } from "@/lib/data/store/crm-store";
+import { buildExtendedConnectionsMap } from "@/lib/data/store/supabase-store";
 import { emailStats, networkEdges } from "./fixtures";
 import { worldSearchResults } from "./world-search";
 
 /**
  * Mock implementation for non-CRM data (email charts, graph fixtures, world search).
- * Contacts and updates use `lib/data/store/crm-store.ts`.
+ * Contacts and updates use `lib/data/store/supabase-store.ts`.
  */
 
 export async function getNetworkEdges(): Promise<NetworkEdge[]> {

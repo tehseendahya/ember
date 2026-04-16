@@ -1,7 +1,7 @@
 /**
  * Application data layer — import from here in routes and server components.
  *
- * Contact data and CRM mutations persist to Supabase tables (see `lib/data/store/crm-store.ts`).
+ * Contact data and CRM mutations persist to Supabase tables (see `lib/data/store/supabase-store.ts`).
  * Email analytics remain mock-backed. Network edges (1°) are fixtures; second-degree edges persist in Supabase.
  */
 
@@ -23,7 +23,7 @@ export type {
   WorldSearchResult,
 } from "@/lib/types";
 
-export type { AddSecondDegreeEdgeInput, ApplyPayload, TodayData } from "./store/crm-store";
+export type { AddSecondDegreeEdgeInput, ApplyPayload, TodayData } from "./store/supabase-store";
 
 export {
   addSecondDegreeEdge,
@@ -44,7 +44,7 @@ export {
   getTodayData,
   getWeeklyDigest,
   snoozeContact,
-} from "./store/crm-store";
+} from "./store/supabase-store";
 
 export {
   getEmailStats,

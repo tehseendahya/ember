@@ -6,11 +6,3 @@ export function getSupabaseEnv() {
   }
   return { url, anonKey };
 }
-
-export function getSupabaseServiceRoleKey() {
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-  if (!key) {
-    throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
-  }
-  return key;
-}

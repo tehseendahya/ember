@@ -1,4 +1,3 @@
 node_modules
 .next
-data/crm-store.json
 .env.local
