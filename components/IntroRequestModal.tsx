@@ -129,7 +129,7 @@ export default function IntroRequestModal({
 
   const contactHref =
     selectedIntroducer &&
-    `/my-people/${selectedIntroducer.id}?${new URLSearchParams({
+    `/people/${selectedIntroducer.id}?${new URLSearchParams({
       introTarget: result.name,
       introCompany: result.company ?? "",
       introQuery: searchQuery,

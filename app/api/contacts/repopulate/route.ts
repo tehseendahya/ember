@@ -105,8 +105,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: updateError.message }, { status: 500 });
     }
 
-    revalidatePath("/my-people");
-    revalidatePath(`/my-people/${contactId}`);
+    revalidatePath("/people");
+    revalidatePath(`/people/${contactId}`);
 
     return NextResponse.json({
       ok: true,

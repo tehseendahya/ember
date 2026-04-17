@@ -38,68 +38,6 @@ export interface NetworkEdge {
   label?: string;
 }
 
-export interface EmailWeeklyPoint {
-  week: string;
-  sent: number;
-  received: number;
-}
-
-export interface EmailHeatmapCell {
-  day: string;
-  hour: string;
-  rate: number;
-}
-
-export interface EmailResponseByType {
-  type: string;
-  rate: number;
-}
-
-/** Row keys beyond `month` are contact-first names used as chart series. */
-export type RelationshipHealthRow = { month: string } & Record<string, string | number>;
-
-export interface EmailRecentRow {
-  id: string;
-  contactId: string;
-  contact: string;
-  avatar: string;
-  avatarColor: string;
-  subject: string;
-  date: string;
-  type: "sent" | "received";
-  opened: boolean;
-  replied: boolean;
-  openCount: number;
-  sentiment: string;
-}
-
-export interface EmailTrackerItem {
-  id: string;
-  contactId: string;
-  contact: string;
-  avatar: string;
-  avatarColor: string;
-  subject: string;
-  openCount: number;
-  lastOpened: string | null;
-  daysAgo: number;
-  suggestion: string;
-  urgency: "high" | "medium" | "low";
-}
-
-export interface EmailStats {
-  totalSent: number;
-  openRate: number;
-  responseRate: number;
-  avgResponseTime: number;
-  weeklyData: EmailWeeklyPoint[];
-  heatmapData: EmailHeatmapCell[];
-  responseRateByType: EmailResponseByType[];
-  relationshipHealth: RelationshipHealthRow[];
-  recentEmails: EmailRecentRow[];
-  trackerItems: EmailTrackerItem[];
-}
-
 export interface RecentUpdate {
   id: string;
   timestamp: string;
@@ -194,7 +132,12 @@ export interface StandaloneReminder {
   date: string;
   text: string;
   done: boolean;
-  source?: "manual" | "google_calendar";
+  /**
+   * How the reminder was created. "captured" = parsed from a user update,
+   * "scheduled" = explicit user schedule ("ping in N"), "drift" = synthesized
+   * (not persisted), "google_calendar" = legacy from calendar sync.
+   */
+  source?: "manual" | "google_calendar" | "captured" | "scheduled" | "drift";
   externalEventId?: string;
   externalUrl?: string;
 }

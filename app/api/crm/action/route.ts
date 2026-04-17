@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { addContactInteraction, completeReminder, snoozeContact, updateInteractionNotes } from "@/lib/data";
+import { addContactInteraction, completeReminder, scheduleReminder, snoozeContact, updateInteractionNotes } from "@/lib/data";
 
 export async function POST(req: NextRequest) {
   try {
@@ -8,7 +8,8 @@ export async function POST(req: NextRequest) {
       | { action: "snooze"; contactId: string; days?: number }
       | { action: "complete_reminder"; reminderId: string }
       | { action: "add_interaction"; contactId: string; type: string; title: string; notes: string; date?: string }
-      | { action: "update_interaction_notes"; interactionId: string; notes: string; contactId: string };
+      | { action: "update_interaction_notes"; interactionId: string; notes: string; contactId: string }
+      | { action: "schedule_reminder"; contactId?: string; days: number; text: string };
 
     if (body.action === "snooze") {
       if (!body.contactId) {
@@ -43,8 +44,8 @@ export async function POST(req: NextRequest) {
       if (!result.ok) {
         return NextResponse.json({ ok: false, error: result.error }, { status: 400 });
       }
-      revalidatePath(`/my-people/${body.contactId}`);
-      revalidatePath("/my-people");
+      revalidatePath(`/people/${body.contactId}`);
+      revalidatePath("/people");
       revalidatePath("/");
       return NextResponse.json({ ok: true });
     }
@@ -62,10 +63,28 @@ export async function POST(req: NextRequest) {
       if (!result.ok) {
         return NextResponse.json({ ok: false, error: result.error }, { status: 400 });
       }
-      revalidatePath(`/my-people/${body.contactId}`);
-      revalidatePath("/my-people");
+      revalidatePath(`/people/${body.contactId}`);
+      revalidatePath("/people");
       revalidatePath("/");
       return NextResponse.json({ ok: true });
+    }
+    if (body.action === "schedule_reminder") {
+      const days = Number.isFinite(body.days) ? Math.max(1, Math.floor(body.days)) : 0;
+      if (!days) {
+        return NextResponse.json({ ok: false, error: "days must be >= 1" }, { status: 400 });
+      }
+      if (!body.text?.trim()) {
+        return NextResponse.json({ ok: false, error: "text required" }, { status: 400 });
+      }
+      const result = await scheduleReminder({ contactId: body.contactId ?? null, days, text: body.text.trim() });
+      if (!result.ok) {
+        return NextResponse.json({ ok: false, error: result.error }, { status: 400 });
+      }
+      if (body.contactId) {
+        revalidatePath(`/people/${body.contactId}`);
+      }
+      revalidatePath("/");
+      return NextResponse.json({ ok: true, reminderId: result.reminderId });
     }
     return NextResponse.json({ ok: false, error: "Unknown action" }, { status: 400 });
   } catch (e) {

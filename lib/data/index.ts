@@ -2,13 +2,12 @@
  * Application data layer — import from here in routes and server components.
  *
  * Contact data and CRM mutations persist to Supabase tables (see `lib/data/store/supabase-store.ts`).
- * Email analytics remain mock-backed. Network edges (1°) are fixtures; second-degree edges persist in Supabase.
+ * Network edges (1°) are fixtures; second-degree edges persist in Supabase.
  */
 
 export type {
   Contact,
   ContactSummary,
-  EmailStats,
   ExtendedProfile,
   Interaction,
   IntroDraftTone,
@@ -49,7 +48,6 @@ export {
 } from "./store/supabase-store";
 
 export {
-  getEmailStats,
   getExtendedConnections,
   getNetworkEdges,
   getWorldSearchResults,

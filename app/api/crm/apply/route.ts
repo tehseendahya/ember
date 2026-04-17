@@ -10,10 +10,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(result, { status: 400 });
     }
     revalidatePath("/");
-    revalidatePath("/my-people");
-    revalidatePath("/update");
+    revalidatePath("/people");
     if (result.contactId) {
-      revalidatePath(`/my-people/${result.contactId}`);
+      revalidatePath(`/people/${result.contactId}`);
     }
     return NextResponse.json(result);
   } catch (e) {

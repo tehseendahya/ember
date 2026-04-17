@@ -1,6 +1,6 @@
 // Hits all routes so Turbopack pre-compiles them in the background.
 // Run after `next dev` is ready.
-const routes = ["/", "/my-people", "/update", "/search", "/emails"];
+const routes = ["/", "/people", "/discover"];
 // Next.js may shift to 3001/3002/etc if 3000 is taken — honour $PORT if set
 // Use 127.0.0.1 (not localhost) so Node's fetch hits IPv4; on many macOS setups
 // localhost resolves to ::1 first while Next listens on IPv4, causing warm.js

@@ -6,7 +6,7 @@ export async function POST() {
   const result = await syncRecentGoogleCalendarEvents();
   if (result.ok) {
     revalidatePath("/");
-    revalidatePath("/update");
+    revalidatePath("/people");
   }
   return NextResponse.json(result, { status: result.ok ? 200 : 400 });
 }

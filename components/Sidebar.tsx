@@ -2,17 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Users, Edit3, Search, Mail, Settings, Circle, Menu, X, Sun, GitBranch } from "lucide-react";
+import { Users, Settings, Circle, Menu, X, Sun, Compass } from "lucide-react";
 import { useState, useEffect } from "react";
 
 const navItems = [
-  { href: "/", icon: Sun, label: "Today" },
-  { href: "/my-people", icon: Users, label: "My People" },
-  { href: "/relationship-graph", icon: GitBranch, label: "Relationship Graph" },
-  { href: "/update", icon: Edit3, label: "Update" },
-  { href: "/search", icon: Search, label: "Search" },
-  { href: "/emails", icon: Mail, label: "Emails" },
-  { href: "/settings", icon: Settings, label: "Settings" },
+  { href: "/", icon: Sun, label: "Home" },
+  { href: "/people", icon: Users, label: "People" },
+  { href: "/discover", icon: Compass, label: "Discover" },
 ];
 
 export default function Sidebar() {

@@ -44,7 +44,7 @@ export default function ContactCard({ contact }: ContactCardProps) {
   const dateColor = getDateColor(contact.lastContact.date);
 
   return (
-    <Link href={`/my-people/${contact.id}`} style={{ textDecoration: "none" }}>
+    <Link href={`/people/${contact.id}`} style={{ textDecoration: "none" }}>
       <div
         style={{
           background: "#ffffff",
