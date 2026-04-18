@@ -39,6 +39,7 @@ export {
   getReachOutRecommendation,
   getSecondDegreeEdges,
   getRecentUpdates,
+  scheduleReminder,
   setProfileContext,
   setReachOutRecommendation,
   getTodayData,

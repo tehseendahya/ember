@@ -1,15 +1,16 @@
-import { getContacts, getTodayData, getWeeklyDigest } from "@/lib/data";
-import TodayClient from "@/components/TodayClient";
+import { getContacts, getTodayData } from "@/lib/data";
+import HomeClient from "@/components/HomeClient";
 import { getGoogleIntegrationStatus } from "@/lib/integrations/google-calendar";
+import { getTodaysMeetingsWithBriefings } from "@/lib/briefings/today";
 
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const [today, digest, contacts, googleIntegrationStatus] = await Promise.all([
+  const [today, contacts, googleIntegrationStatus, todaysMeetings] = await Promise.all([
     getTodayData(),
-    getWeeklyDigest(),
     getContacts(),
     getGoogleIntegrationStatus(),
+    getTodaysMeetingsWithBriefings().catch(() => []),
   ]);
   const byId = new Map(contacts.map((c) => [c.id, c]));
   const dueReminders = today.dueReminders.map((r) => ({
@@ -18,10 +19,10 @@ export default async function HomePage() {
   }));
 
   return (
-    <TodayClient
+    <HomeClient
       staleContacts={today.staleContacts}
       dueReminders={dueReminders}
-      digest={digest}
+      todaysMeetings={todaysMeetings}
       googleIntegrationStatus={googleIntegrationStatus}
     />
   );

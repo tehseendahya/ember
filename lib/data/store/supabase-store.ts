@@ -5,8 +5,25 @@ import { requireUserId } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { enrichContactFromWeb } from "@/lib/integrations/enrich-contact-from-web";
 
-const STALE_CONTACT_DAYS = 45;
 const DRIFT_DAYS = 30;
+
+/**
+ * Tier-aware "haven't talked in a while" thresholds. Close contacts
+ * (connectionStrength 5) get a tight 30-day threshold; loose acquaintances
+ * (strength 1) get 180 days so we stop nagging about ties we don't maintain.
+ */
+const DRIFT_DAYS_BY_STRENGTH: Record<1 | 2 | 3 | 4 | 5, number> = {
+  5: 30,
+  4: 45,
+  3: 90,
+  2: 135,
+  1: 180,
+};
+
+function driftThresholdFor(strength: number): number {
+  const s = Math.max(1, Math.min(5, Math.round(strength || 3))) as 1 | 2 | 3 | 4 | 5;
+  return DRIFT_DAYS_BY_STRENGTH[s];
+}
 const INTERACTION_TYPES: Interaction["type"][] = ["meeting", "email", "zoom", "intro", "message", "event"];
 const EVIDENCE: SecondDegreeEvidence[] = ["colleague", "friend", "investor_relation", "intro_offer", "event", "other"];
 const AVATAR_COLORS = ["#6c63ff", "#10b981", "#f59e0b", "#a78bfa", "#34d399", "#f472b6", "#fb923c", "#60a5fa", "#818cf8", "#f87171"];
@@ -127,7 +144,7 @@ export async function applyCrmUpdate(payload: ApplyPayload): Promise<{ ok: true;
     if (uErr) return { ok: false, error: uErr.message };
   }
   if (payload.reminder) {
-    const { error } = await supabase.from("reminders").insert({ id: randomUUID(), user_id: userId, contact_id: contactId, date: payload.reminder.date, text: payload.reminder.text, done: false, source: "manual" });
+    const { error } = await supabase.from("reminders").insert({ id: randomUUID(), user_id: userId, contact_id: contactId, date: payload.reminder.date, text: payload.reminder.text, done: false, source: "captured" });
     if (error) return { ok: false, error: error.message };
     actions.push(contactId ? `Reminder: ${payload.reminder.text} (${payload.reminder.date})` : `Reminder: ${payload.reminder.text}`);
   }
@@ -139,6 +156,29 @@ export async function applyCrmUpdate(payload: ApplyPayload): Promise<{ ok: true;
 
 export async function snoozeContact(contactId: string, days: number) { const d = new Date(); d.setDate(d.getDate() + days); const supabase = await createSupabaseServerClient(); await supabase.from("contact_snoozes").upsert({ user_id: await requireUserId(), contact_id: contactId, snoozed_until: d.toISOString().slice(0, 10) }); }
 export async function completeReminder(reminderId: string) { const supabase = await createSupabaseServerClient(); await supabase.from("reminders").update({ done: true }).eq("id", reminderId).eq("user_id", await requireUserId()); }
+
+/**
+ * Explicit user-scheduled ping ("remind me to follow up with Alice in 3 months").
+ * Stored with source: "scheduled" so the action queue can label it correctly.
+ */
+export async function scheduleReminder(input: { contactId: string | null; days: number; text: string }): Promise<{ ok: true; reminderId: string } | { ok: false; error: string }> {
+  const userId = await requireUserId();
+  const supabase = await createSupabaseServerClient();
+  const d = new Date();
+  d.setDate(d.getDate() + input.days);
+  const id = randomUUID();
+  const { error } = await supabase.from("reminders").insert({
+    id,
+    user_id: userId,
+    contact_id: input.contactId,
+    date: d.toISOString().slice(0, 10),
+    text: input.text,
+    done: false,
+    source: "scheduled",
+  });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, reminderId: id };
+}
 
 export async function addContactInteraction(input: AddContactInteractionInput): Promise<{ ok: true } | { ok: false; error: string }> {
   const userId = await requireUserId();
@@ -235,7 +275,11 @@ export async function getTodayData(): Promise<TodayData> {
   const userId = await requireUserId(); const contacts = await getHydratedContacts(userId); const supabase = await createSupabaseServerClient();
   const [{ data: reminders }, { data: snoozes }] = await Promise.all([supabase.from("reminders").select("*").eq("user_id", userId), supabase.from("contact_snoozes").select("contact_id,snoozed_until").eq("user_id", userId)]);
   const today = todayISO(); const snoozeMap = new Map((snoozes ?? []).map((s) => [s.contact_id, s.snoozed_until]));
-  const staleContacts = contacts.map((contact) => ({ contact, daysSince: daysBetween(contact.lastContact.date, today) })).filter((x) => x.daysSince >= STALE_CONTACT_DAYS && (!snoozeMap.get(x.contact.id) || snoozeMap.get(x.contact.id)! <= today)).sort((a, b) => b.daysSince - a.daysSince).slice(0, 20);
+  const staleContacts = contacts
+    .map((contact) => ({ contact, daysSince: daysBetween(contact.lastContact.date, today) }))
+    .filter((x) => x.daysSince >= driftThresholdFor(x.contact.connectionStrength) && (!snoozeMap.get(x.contact.id) || snoozeMap.get(x.contact.id)! <= today))
+    .sort((a, b) => b.daysSince - a.daysSince)
+    .slice(0, 20);
   const dueReminders = (reminders ?? []).filter((r) => !r.done && r.date <= today).map((r) => ({ id: r.id, contactId: r.contact_id, date: r.date, text: r.text, done: r.done, source: r.source ?? "manual", externalEventId: r.external_event_id ?? undefined, externalUrl: r.external_url ?? undefined }));
   return { staleContacts, dueReminders };
 }
