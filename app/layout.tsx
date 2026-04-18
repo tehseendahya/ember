@@ -3,7 +3,7 @@ import "./globals.css";
 import AppShell from "@/components/AppShell";
 
 export const metadata: Metadata = {
-  title: "Ember — Personal CRM",
+  title: "Ember: Personal CRM",
   description: "Your personal relationship management platform",
 };
 

@@ -36,6 +36,7 @@ Rules:
 - If a name in the input matches a known contact (fuzzy match ok), set matched_contact and leave new_contact null.
 - If this is a new person not in the list, set new_contact and leave matched_contact null.
 - If there's no clear person, both can be null.
+- reminder MUST be null UNLESS the user EXPLICITLY asks to be reminded or signals clear future-tense intent. Examples that SHOULD create a reminder: "follow up next week", "ping me in 6 months", "remind me after the demo", "check back with her in Q2", "circle back in 2 weeks". Examples that should NOT create a reminder: "just met Alice", "had coffee with Bob", "sent a note to Carol", "great call with Dan". When in doubt, set reminder to null — we would rather miss a reminder than spam the user.
 - For reminder dates: interpret relative terms like "next week", "early may", "in 3 days" relative to today (${new Date().toISOString().split("T")[0]}).
 - tags should be 1-3 relevant tags like "investor", "follow-up", "opportunity", "intro", etc.
 - summary should be a friendly one-liner like "Added meeting with Justin Smith and set a follow-up reminder for May 1"`;
