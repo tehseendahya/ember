@@ -62,9 +62,30 @@ begin
   insert into public.second_degree_edges (
     user_id, introducer_contact_id, target_name, target_company, target_role, evidence, confidence, last_evidence_at, notes, source
   ) values
+    -- Justin (a16z Partner) — investor intros
     (target_user_id, c_justin, 'Nina Sharma', 'Sequoia Capital', 'Partner', 'intro_offer', 5, '2026-01-15', 'Justin offered a warm intro after Q2 metrics.', 'import'),
+    (target_user_id, c_justin, 'Marc Andreessen', 'Andreessen Horowitz', 'Co-Founder', 'colleague', 4, '2026-01-20', 'a16z internal colleague; occasional intros to founders.', 'import'),
+    (target_user_id, c_justin, 'Mamoon Hamid', 'Kleiner Perkins', 'Partner', 'friend', 4, '2025-12-10', 'Close peer on the VC circuit.', 'import'),
+    (target_user_id, c_justin, 'Chase Coleman', 'Tiger Global', 'Founder', 'investor_relation', 3, '2025-11-02', 'Co-invested in two portfolio companies.', 'import'),
+    (target_user_id, c_justin, 'Brian Halligan', 'HubSpot', 'Co-Founder', 'event', 3, '2025-10-14', 'Met at SaaStr; Justin has a direct line.', 'import'),
+    -- Sarah (Google PM) — operator / product intros
     (target_user_id, c_sarah, 'Jeff Dean', 'Google DeepMind', 'Chief Scientist', 'colleague', 4, '2026-02-03', 'Sarah knows Jeff from internal PM/Research workstreams.', 'import'),
-    (target_user_id, c_ben, 'Rachel Kim', 'Figma', 'Head of Design', 'friend', 4, '2026-03-10', 'Ben made a prior intro for design feedback.', 'import');
+    (target_user_id, c_sarah, 'Sundar Pichai', 'Google', 'CEO', 'colleague', 3, '2026-01-28', 'Org-level exposure; would need a strong reason.', 'import'),
+    (target_user_id, c_sarah, 'Noam Shazeer', 'Google DeepMind', 'VP Research', 'colleague', 4, '2026-02-18', 'Regularly overlaps on AI product launches.', 'import'),
+    (target_user_id, c_sarah, 'Claire Hughes Johnson', 'Stripe', 'Advisor', 'friend', 4, '2025-12-05', 'Former Google SVP, still close with Sarah.', 'import'),
+    -- Michael (Founder @ TechStart) — founder / YC intros
+    (target_user_id, c_michael, 'Paul Graham', 'Y Combinator', 'Co-Founder', 'investor_relation', 4, '2025-11-20', 'Michael went through YC; Paul still replies.', 'import'),
+    (target_user_id, c_michael, 'Garry Tan', 'Y Combinator', 'President', 'investor_relation', 5, '2026-01-05', 'Direct partner during Michael''s batch.', 'import'),
+    (target_user_id, c_michael, 'Dylan Field', 'Figma', 'CEO', 'friend', 3, '2025-09-22', 'Mutual founder friends from Bay Area dinners.', 'import'),
+    -- Emily (ML @ OpenAI) — AI research intros
+    (target_user_id, c_emily, 'Sam Altman', 'OpenAI', 'CEO', 'colleague', 3, '2026-02-10', 'Org-level; Emily can pass along a well-framed ask.', 'import'),
+    (target_user_id, c_emily, 'Dario Amodei', 'Anthropic', 'CEO', 'colleague', 4, '2025-12-18', 'Former OpenAI colleague; still in touch.', 'import'),
+    (target_user_id, c_emily, 'Ilya Sutskever', 'Safe Superintelligence', 'Co-Founder', 'colleague', 3, '2025-11-15', 'Worked alongside Ilya on alignment research.', 'import'),
+    -- Ben (CPO @ Notion) — product / advisor intros
+    (target_user_id, c_ben, 'Rachel Kim', 'Figma', 'Head of Design', 'friend', 4, '2026-03-10', 'Ben made a prior intro for design feedback.', 'import'),
+    (target_user_id, c_ben, 'Ivan Zhao', 'Notion', 'CEO', 'colleague', 5, '2026-03-01', 'Direct report relationship; easy warm intro.', 'import'),
+    (target_user_id, c_ben, 'Stewart Butterfield', 'Slack (ex)', 'Co-Founder', 'friend', 4, '2025-10-30', 'Former Slack colleague; strong personal tie.', 'import'),
+    (target_user_id, c_ben, 'Cristina Cordova', 'Linear', 'COO', 'friend', 4, '2026-02-22', 'Close operator friend from the product leader circuit.', 'import');
 
   insert into public.user_settings (user_id, profile_context, reach_out_recommendation) values
     (

@@ -1,13 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import Link from "next/link";
-import { Users, TrendingUp, Calendar, GitBranch, ArrowRight, Upload, List, Network } from "lucide-react";
+import { Users, TrendingUp, Calendar, GitBranch, Upload, List, Network } from "lucide-react";
 import ContactCard from "@/components/ContactCard";
 import NetworkGraph from "@/components/NetworkGraph";
 import ImportPeopleModal from "@/components/ImportPeopleModal";
 import type { Contact } from "@/lib/types";
-import type { GraphCluster, UnifiedGraphViewModel } from "@/lib/network/graph-view-model";
+import type { UnifiedGraphViewModel } from "@/lib/network/graph-view-model";
 
 export default function PeopleClient({
   contacts,
@@ -18,8 +17,7 @@ export default function PeopleClient({
 }) {
   const [activeFilter, setActiveFilter] = useState("all");
   const [view, setView] = useState<"list" | "graph">("list");
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(graphModel.contacts[0]?.id ?? null);
-  const [clusterFilter, setClusterFilter] = useState<GraphCluster | "all">("all");
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
 
   const avgStrength = (contacts.reduce((sum, c) => sum + c.connectionStrength, 0) / Math.max(1, contacts.length)).toFixed(1);
@@ -44,14 +42,6 @@ export default function PeopleClient({
     if (activeFilter === "needs_verification") return contacts.filter((c) => c.needsVerification);
     return contacts.filter((c) => c.tags.includes(activeFilter));
   }, [activeFilter, contacts]);
-
-  const selectedContact = graphModel.contacts.find((c) => c.id === selectedNodeId) ?? null;
-  const selectedTarget = graphModel.targets.find((t) => t.id === selectedNodeId) ?? null;
-  const selectedIntroOptions = selectedContact
-    ? graphModel.introQueue.filter((i) => i.introducerContactId === selectedContact.id).slice(0, 8)
-    : selectedTarget
-      ? graphModel.introQueue.filter((i) => i.edgeId === selectedTarget.edgeId)
-      : graphModel.introQueue.slice(0, 8);
 
   return (
     <div className="page-container" style={{ padding: "32px 40px", maxWidth: "1400px" }}>
@@ -154,78 +144,10 @@ export default function PeopleClient({
         <div style={{ marginBottom: "20px" }}>
           <NetworkGraph
             model={graphModel}
+            contacts={contacts}
             selectedNodeId={selectedNodeId}
             onSelectNode={setSelectedNodeId}
-            clusterFilter={clusterFilter}
-            onSelectCluster={setClusterFilter}
           />
-          <div className="inspector-grid" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "12px", minWidth: 0, marginTop: "12px" }}>
-            <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: "12px", padding: "14px" }}>
-              <div style={{ fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.05em", color: "#9ca3af", marginBottom: "8px" }}>
-                Inspector
-              </div>
-              {selectedContact ? (
-                <>
-                  <div style={{ fontSize: "16px", fontWeight: 700, color: "#111827" }}>{selectedContact.name}</div>
-                  <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "8px" }}>
-                    {selectedContact.role} @ {selectedContact.company}
-                  </div>
-                  <div style={{ fontSize: "12px", color: "#6b7280", lineHeight: 1.5 }}>
-                    Relationship score: <strong>{selectedContact.relationshipScore}</strong> / 100
-                  </div>
-                  <div style={{ fontSize: "11px", color: "#9ca3af", marginTop: "6px", lineHeight: 1.5 }}>
-                    {selectedContact.relationshipBreakdown.strength.source === "inferred" ||
-                    selectedContact.relationshipBreakdown.frequency.source === "inferred"
-                      ? "Includes estimated metrics where data is sparse."
-                      : "Computed from real interaction history."}
-                  </div>
-                  <Link href={`/people/${selectedContact.id}`} style={{ marginTop: "10px", display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#4f46e5", textDecoration: "none", fontWeight: 600 }}>
-                    Open profile <ArrowRight size={12} />
-                  </Link>
-                </>
-              ) : selectedTarget ? (
-                <>
-                  <div style={{ fontSize: "16px", fontWeight: 700, color: "#111827" }}>{selectedTarget.name}</div>
-                  <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "8px" }}>
-                    {selectedTarget.role} {selectedTarget.company ? `@ ${selectedTarget.company}` : ""}
-                  </div>
-                  <div style={{ fontSize: "12px", color: "#6b7280" }}>
-                    Intro score: <strong>{selectedTarget.introScore}</strong> / 100
-                  </div>
-                  <div style={{ fontSize: "11px", color: "#9ca3af", marginTop: "6px" }}>
-                    {selectedTarget.introScoreSource === "inferred" ? "Estimated intro score." : "Backed by real edge evidence."}
-                  </div>
-                </>
-              ) : (
-                <div style={{ fontSize: "12px", color: "#9ca3af" }}>Select a node to inspect details.</div>
-              )}
-            </div>
-
-            <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: "12px", padding: "14px" }}>
-              <div style={{ fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.05em", color: "#9ca3af", marginBottom: "8px" }}>
-                Intro Queue
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "420px", overflowY: "auto" }}>
-                {selectedIntroOptions.length === 0 ? (
-                  <div style={{ fontSize: "12px", color: "#9ca3af" }}>No intro paths for current selection.</div>
-                ) : (
-                  selectedIntroOptions.map((item) => (
-                    <div key={item.edgeId} style={{ padding: "9px 10px", border: "1px solid #f3f4f6", background: "#f8f9fa", borderRadius: "8px" }}>
-                      <div style={{ fontSize: "13px", fontWeight: 600, color: "#111827" }}>
-                        {item.targetName} {item.targetCompany ? `· ${item.targetCompany}` : ""}
-                      </div>
-                      <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "2px" }}>
-                        via {item.introducerName}
-                      </div>
-                      <div style={{ fontSize: "11px", color: "#7c3aed", marginTop: "4px" }}>
-                        Score {item.introScore} {item.source === "inferred" ? "(estimated)" : ""}
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
         </div>
       )}
 
@@ -266,9 +188,6 @@ export default function PeopleClient({
           margin: 0 auto;
           box-sizing: border-box;
         }
-        @media (max-width: 980px) {
-          .inspector-grid { grid-template-columns: 1fr !important; }
-        }
         @media (max-width: 768px) {
           .page-container { padding: 20px 16px !important; }
           .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
@@ -278,4 +197,3 @@ export default function PeopleClient({
     </div>
   );
 }
-
