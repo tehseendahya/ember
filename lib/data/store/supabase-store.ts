@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "crypto";
-import type { Contact, ContactSummary, ExtendedProfile, Interaction, ReachOutRecommendation, RecentUpdate, SecondDegreeEdge, SecondDegreeEvidence, StandaloneReminder, WeeklyDigest } from "@/lib/types";
+import type { Contact, ContactSummary, ExtendedProfile, IdentityEvidenceSnapshot, Interaction, ReachOutRecommendation, RecentUpdate, SecondDegreeEdge, SecondDegreeEvidence, StandaloneReminder, VerificationCandidate, WeeklyDigest } from "@/lib/types";
 import { requireUserId } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { enrichContactFromWeb } from "@/lib/integrations/enrich-contact-from-web";
@@ -68,6 +68,10 @@ async function getHydratedContacts(userId: string): Promise<Contact[]> {
     avatar: c.avatar ?? initials(c.name), avatarColor: c.avatar_color ?? avatarColor(c.name), tags: c.tags ?? [],
     lastContact: { type: c.last_contact_type ?? "message", date: c.last_contact_date ?? todayISO(), description: c.last_contact_description ?? "Added to CRM" },
     interactions: byId.get(c.id) ?? [], notes: c.notes ?? "", connectionStrength: c.connection_strength ?? 2, mutualConnections: c.mutual_connections ?? [],
+    needsVerification: Boolean(c.needs_verification),
+    verificationReason: c.verification_reason ?? "",
+    verificationCandidates: Array.isArray(c.verification_candidates) ? (c.verification_candidates as VerificationCandidate[]) : [],
+    identityEvidence: (c.identity_evidence ?? {}) as IdentityEvidenceSnapshot,
   }));
 }
 

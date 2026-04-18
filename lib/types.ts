@@ -11,6 +11,32 @@ export interface Interaction {
   reminder?: string;
 }
 
+export interface VerificationCandidate {
+  name: string;
+  linkedin: string;
+  title: string;
+  snippet: string;
+  score: number;
+  workDomainMatch: boolean;
+}
+
+export interface IdentityEvidenceSnapshot {
+  primaryNameSource?: string;
+  displayName?: string | null;
+  /** Name pulled from the user's Google Contacts via People API, if available. */
+  googleContactsName?: string | null;
+  googleContactsSource?: "savedContact" | "otherContact" | null;
+  emailLocalName?: string | null;
+  titleHintName?: string | null;
+  email?: string | null;
+  emailIsPersonalProvider?: boolean;
+  workDomainCompany?: string | null;
+  eventSummary?: string | null;
+  attendeeCount?: number | null;
+  resolverConfidence?: string;
+  enrichmentConfidence?: number | null;
+}
+
 export interface Contact {
   id: string;
   name: string;
@@ -30,6 +56,11 @@ export interface Contact {
   notes: string;
   connectionStrength: 1 | 2 | 3 | 4 | 5;
   mutualConnections: string[];
+  /** Set when the sync pipeline couldn't fully verify this person's identity. */
+  needsVerification?: boolean;
+  verificationReason?: string;
+  verificationCandidates?: VerificationCandidate[];
+  identityEvidence?: IdentityEvidenceSnapshot;
 }
 
 export interface NetworkEdge {

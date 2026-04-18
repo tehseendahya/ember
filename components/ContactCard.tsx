@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Mail, Linkedin, Calendar, Zap } from "lucide-react";
+import { Mail, Linkedin, Calendar, Zap, AlertTriangle } from "lucide-react";
 import type { Contact } from "@/lib/types";
 
 const strengthColors: Record<number, string> = {
@@ -104,9 +104,34 @@ export default function ContactCard({ contact }: ContactCardProps) {
                 marginBottom: "2px",
                 lineHeight: 1.35,
                 overflowWrap: "anywhere",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                flexWrap: "wrap",
               }}
             >
-              {contact.name}
+              <span>{contact.name}</span>
+              {contact.needsVerification ? (
+                <span
+                  title={contact.verificationReason || "Needs verification"}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "3px",
+                    fontSize: "10px",
+                    fontWeight: 700,
+                    padding: "2px 7px",
+                    borderRadius: "999px",
+                    background: "rgba(217, 119, 6, 0.1)",
+                    color: "#b45309",
+                    border: "1px solid rgba(217, 119, 6, 0.25)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.04em",
+                  }}
+                >
+                  <AlertTriangle size={10} /> Review
+                </span>
+              ) : null}
             </div>
             <div
               style={{
@@ -116,7 +141,7 @@ export default function ContactCard({ contact }: ContactCardProps) {
                 overflowWrap: "anywhere",
               }}
             >
-              {contact.role} @ {contact.company}
+              {contact.role || (contact.needsVerification ? "Role unknown" : "")}{contact.company ? ` @ ${contact.company}` : ""}
             </div>
           </div>
           {/* Actions */}

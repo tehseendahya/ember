@@ -77,6 +77,13 @@ export async function summarizePersonForCrm(input: {
    * Strong signal for which person + employer when the name is common.
    */
   workDomainCompany?: string | null;
+  /**
+   * Free-text clarification the user typed while resolving a `needs_verification`
+   * contact (e.g. "founder of Majente", "MBA at Duke Fuqua"). Treat as
+   * authoritative: when multiple same-name profiles could match, pick the one
+   * consistent with this hint.
+   */
+  userHint?: string | null;
 }): Promise<{ role: string; company: string; notes: string }> {
   const key = process.env.OPENAI_API_KEY?.trim();
   if (!key) {
@@ -96,11 +103,17 @@ export async function summarizePersonForCrm(input: {
     ? `WORK_ORGANIZATION_FROM_EMAIL (this invitee uses a work domain — treat as the likely employer when choosing which "${input.name}" the text describes; if RAW_WEB_TEXT clearly describes a different person, say so in bullets instead): ${input.workDomainCompany.trim()}`
     : "WORK_ORGANIZATION_FROM_EMAIL: (none — personal email or missing)";
 
+  const userHintLine = input.userHint?.trim()
+    ? `USER_PROVIDED_CLARIFICATION (the user typed this to tell us exactly who this person is — treat as authoritative when deciding which same-name profile to describe): ${input.userHint.trim()}`
+    : "USER_PROVIDED_CLARIFICATION: (none)";
+
   const user = `Person name: ${input.name}
 
 ${emailLine}
 
 ${workOrgLine}
+
+${userHintLine}
 
 LINKEDIN_SEARCH_RESULT_TITLE (may help disambiguate role/company; may be empty):
 ${input.linkedInResultTitle ?? "(none)"}
@@ -111,7 +124,7 @@ ${input.rawExcerpt.slice(0, 8000)}
 HOW_THE_USER_KNOWS_THEM (from CRM: last touch, meetings, tags — use for the relationship bullet only):
 ${input.relationshipContext.trim() || "Not specified — use one short line asking to add how they know each other."}
 
-Important: Infer "role" and "company" primarily from RAW_WEB_TEXT and LINKEDIN_SEARCH_RESULT_TITLE. When WORK_ORGANIZATION_FROM_EMAIL is set and the text matches that organization (or the LinkedIn title does), use that organization for "company" and roles consistent with it. If RAW_WEB_TEXT is clearly about a different employer than WORK_ORGANIZATION_FROM_EMAIL, prefer the text but mention the mismatch briefly in one bullet. Ignore stale employers that might have been stored in CRM before.
+Important: Infer "role" and "company" primarily from RAW_WEB_TEXT and LINKEDIN_SEARCH_RESULT_TITLE. When USER_PROVIDED_CLARIFICATION is present, it outranks WORK_ORGANIZATION_FROM_EMAIL — pick the same-name profile consistent with the user's clarification. When RAW_WEB_TEXT matches the clarified organization/role, use it for "company" and for roles. If RAW_WEB_TEXT clearly describes a different person than the clarification, say so briefly in one bullet rather than silently writing the wrong profile. Ignore stale employers that might have been stored in CRM before.
 
 Return this JSON shape:
 {"role":"short current job title only","company":"primary organization they work for now","bullets":["Education / school — one short line, or Unknown","Past experience — one short line","What they are doing now — one short line","Relationship — based on HOW_THE_USER_KNOWS_THEM; if empty say they should add context in CRM"]}
@@ -120,7 +133,7 @@ Hard rules:
 - bullets: exactly 4 items, each max 130 characters, plain sentences (no leading dashes or #).
 - role and company must reflect current work from the text when possible (not stale employers unless RAW_WEB_TEXT only mentions those).
 - Do not copy long hashtags or section titles verbatim; paraphrase.
-- If several people could match ${input.name}, prefer the profile consistent with WORK_ORGANIZATION_FROM_EMAIL when it is set.
+- Priority order for disambiguating multiple "${input.name}"s: USER_PROVIDED_CLARIFICATION > WORK_ORGANIZATION_FROM_EMAIL > LINKEDIN_SEARCH_RESULT_TITLE.
 - If RAW_WEB_TEXT clearly describes a different person than this invitee, say so briefly in one bullet.`;
 
   try {

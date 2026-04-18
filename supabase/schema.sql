@@ -19,12 +19,20 @@ create table if not exists public.contacts (
   notes text not null default '',
   connection_strength smallint not null default 2 check (connection_strength between 1 and 5),
   mutual_connections text[] not null default '{}',
+  needs_verification boolean not null default false,
+  verification_reason text not null default '',
+  verification_candidates jsonb not null default '[]'::jsonb,
+  identity_evidence jsonb not null default '{}'::jsonb,
+  origin_event_id text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 create index if not exists contacts_user_idx on public.contacts(user_id);
 create index if not exists contacts_last_contact_idx on public.contacts(user_id, last_contact_date desc);
+create index if not exists contacts_needs_verification_idx
+  on public.contacts(user_id, needs_verification)
+  where needs_verification = true;
 
 -- Interactions
 create table if not exists public.interactions (
