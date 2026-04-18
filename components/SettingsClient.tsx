@@ -59,7 +59,9 @@ export default function SettingsClient({ initialProfileContext }: { initialProfi
         Settings
       </h1>
       <p style={{ fontSize: "14px", color: "#6b7280", marginBottom: "20px" }}>
-        Add your personal context so Ember can generate better &quot;who to reach out to&quot; recommendations.
+        Add your personal context so Ember can tailor reach-out suggestions, Discover search (your network and the web),
+        quick capture parsing, verification flows, and calendar-based contact enrichment — people you meet often fit the
+        same professional mold as you.
       </p>
 
       <section style={{ border: "1px solid #e5e7eb", borderRadius: "12px", padding: "16px", marginBottom: "16px", background: "#fff" }}>

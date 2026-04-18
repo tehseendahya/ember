@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getContacts } from "@/lib/data";
+import { getContacts, getProfileContext } from "@/lib/data";
+import { compactProfileContext } from "@/lib/profile-context";
 import type { Contact } from "@/lib/types";
 import { contactToSearchCandidate, recallContacts } from "@/lib/search/network-recall";
 
@@ -36,7 +37,8 @@ export async function POST(req: NextRequest) {
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
-  const contacts = await getContacts();
+  const [contacts, profileRaw] = await Promise.all([getContacts(), getProfileContext()]);
+  const profileBlurb = compactProfileContext(profileRaw, 700);
   const candidates = recallContacts(contacts, query, RECALL_LIMIT);
 
   if (candidates.length === 0) {
@@ -65,11 +67,12 @@ Rules:
 - Order by relevance (most relevant first).
 - relevance is 0–100 (integer). Only include people with relevance >= 35 who truly fit the user's intent.
 - reason: one concise sentence (max 220 chars) explaining why this person fits the query, using facts from the candidate fields.
+- When the query is vague or could mean several things, use the optional "CRM owner profile" (if provided) as a tie-breaker for what the user likely cares about — do not invent facts about candidates from it.
 - If no one fits well, return an empty ranked array.
 - Maximum ${MAX_RESULTS} entries.`;
 
   const userPrompt = `User search query: ${query}
-
+${profileBlurb ? `\nCRM owner profile (tie-breaker for intent only):\n${profileBlurb}\n` : ""}
 Candidates (JSON):
 ${JSON.stringify(candidatePayload, null, 0)}
 

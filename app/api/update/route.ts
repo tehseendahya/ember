@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getContactSummariesForPrompt } from "@/lib/data";
+import { getContactSummariesForPrompt, getProfileContext } from "@/lib/data";
+import { compactProfileContext } from "@/lib/profile-context";
 
 export async function POST(req: NextRequest) {
   const { text } = await req.json();
@@ -13,12 +14,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "OpenAI API key not configured" }, { status: 500 });
   }
 
-  const knownContacts = await getContactSummariesForPrompt();
+  const [knownContacts, profileRaw] = await Promise.all([
+    getContactSummariesForPrompt(),
+    getProfileContext().catch(() => ""),
+  ]);
+  const profileBlurb = compactProfileContext(profileRaw, 600);
 
   const systemPrompt = `You are a smart personal CRM assistant. The user will describe a recent interaction or request about their professional network.
 
 Your job is to parse their natural language input and return a structured JSON response.
-
+${profileBlurb ? `\nCRM owner profile (use for disambiguation and tagging when helpful; do not invent people or events):\n${profileBlurb}\n` : ""}
 Known contacts in the user's network:
 ${knownContacts.map((c) => `- ${c.name} (${c.role} @ ${c.company}), id: ${c.id}`).join("\n")}
 

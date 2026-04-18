@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, useCallback } from "react";
+import { useMemo, useRef, useState, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { Search, ArrowRight, Sparkles, X, RotateCcw, Plus, Minus } from "lucide-react";
 import type {
@@ -123,6 +123,24 @@ function initialsFrom(name: string): string {
   return (first + last).toUpperCase().slice(0, 2);
 }
 
+/** Who to include on the radar: everyone, or one professional group (node colors match these). */
+type GraphFocus = "all" | GraphCluster;
+
+function filterGraphModel(model: UnifiedGraphViewModel, focus: GraphFocus): UnifiedGraphViewModel {
+  const filteredContacts =
+    focus === "all" ? model.contacts : model.contacts.filter((c) => c.cluster === focus);
+  const allowed = new Set(filteredContacts.map((c) => c.id));
+  const filteredTargets = model.targets.filter((t) => allowed.has(t.introducedByContactId));
+  const filteredIntroQueue = model.introQueue.filter((q) => allowed.has(q.introducerContactId));
+  return {
+    ...model,
+    contacts: filteredContacts,
+    targets: filteredTargets,
+    contactLinks: [],
+    introQueue: filteredIntroQueue,
+  };
+}
+
 function targetToWorldSearch(target: GraphTargetNode, introducer: GraphContactNode): WorldSearchResult {
   return {
     id: `graph-target-${target.edgeId}`,
@@ -162,8 +180,21 @@ export default function NetworkGraph({
     introducer: GraphContactNode;
   } | null>(null);
 
-  const ring1 = useMemo(() => placeRing1(model.contacts), [model.contacts]);
-  const ring2 = useMemo(() => placeRing2(ring1, model.targets), [ring1, model.targets]);
+  const [focus, setFocus] = useState<GraphFocus>("all");
+
+  const displayModel = useMemo(() => filterGraphModel(model, focus), [model, focus]);
+
+  const filterEffectOnce = useRef(true);
+  useEffect(() => {
+    if (filterEffectOnce.current) {
+      filterEffectOnce.current = false;
+      return;
+    }
+    onSelectNode(null);
+  }, [focus, onSelectNode]);
+
+  const ring1 = useMemo(() => placeRing1(displayModel.contacts), [displayModel.contacts]);
+  const ring2 = useMemo(() => placeRing2(ring1, displayModel.targets), [ring1, displayModel.targets]);
 
   const ring1ById = useMemo(() => new Map(ring1.map((c) => [c.id, c])), [ring1]);
   const ring2ByEdgeId = useMemo(
@@ -282,8 +313,38 @@ export default function NetworkGraph({
         overflow: "hidden",
       }}
     >
+      <div className="radar-filters radar-filters-simple">
+        <span className="radar-show-label" id="radar-show-label">
+          Show
+        </span>
+        <div className="radar-chip-row" role="group" aria-labelledby="radar-show-label">
+          {(["all", "investors", "builders", "operators", "other"] as const).map((c) => {
+            const label = c === "all" ? "Everyone" : CLUSTER_LABELS[c];
+            return (
+              <button
+                key={c}
+                type="button"
+                className={`radar-chip ${focus === c ? "radar-chip-on" : ""}`}
+                onClick={() => setFocus(c)}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        {focus !== "all" && (
+          <button type="button" className="radar-show-clear" onClick={() => setFocus("all")}>
+            Show everyone
+          </button>
+        )}
+      </div>
+
       <div className="radar-top">
         <div className="radar-stats">
+          <span>
+            <strong>{displayModel.contacts.length}</strong> / {model.contacts.length} people
+          </span>
+          <span className="radar-divider">·</span>
           <span><strong>{warmPaths}</strong> warm paths</span>
           <span className="radar-divider">·</span>
           <span><strong>{totalReachable}</strong> reachable</span>
@@ -325,6 +386,15 @@ export default function NetworkGraph({
 
       <div className="radar-body">
         <div className="radar-canvas-wrap">
+          {displayModel.contacts.length === 0 ? (
+            <div className="radar-zero-state">
+              <p className="radar-zero-title">No one in this group yet.</p>
+              <p className="radar-zero-hint">Pick another category, or add people whose role matches that group.</p>
+              <button type="button" className="radar-zero-btn" onClick={() => setFocus("all")}>
+                Show everyone
+              </button>
+            </div>
+          ) : (
           <svg
             viewBox={`0 0 ${VIEW.w} ${VIEW.h}`}
             width="100%"
@@ -565,10 +635,11 @@ export default function NetworkGraph({
               </g>
             </g>
           </svg>
+          )}
         </div>
 
         <RadarPanel
-          model={model}
+          model={displayModel}
           ring1ById={ring1ById}
           ring2={ring2}
           selectedContact={selectedContact}
@@ -589,6 +660,93 @@ export default function NetworkGraph({
       )}
 
       <style>{`
+        .radar-filters-simple {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 10px 12px;
+          padding: 12px 14px;
+          border-bottom: 1px solid #f3f4f6;
+          background: #fafafa;
+        }
+        .radar-show-label {
+          font-size: 13px;
+          font-weight: 600;
+          color: #374151;
+          flex-shrink: 0;
+        }
+        .radar-show-clear {
+          font-size: 12px;
+          font-weight: 600;
+          color: #4f46e5;
+          background: transparent;
+          border: none;
+          cursor: pointer;
+          padding: 6px 4px;
+          text-decoration: underline;
+          text-underline-offset: 3px;
+        }
+        .radar-show-clear:hover { color: #4338ca; }
+        .radar-chip-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          flex: 1;
+          min-width: 0;
+        }
+        .radar-chip {
+          padding: 6px 12px;
+          border-radius: 999px;
+          border: 1px solid #e5e7eb;
+          background: #fff;
+          font-size: 12px;
+          color: #6b7280;
+          cursor: pointer;
+        }
+        .radar-chip:hover { border-color: #d1d5db; color: #111827; }
+        .radar-chip-on {
+          border-color: rgba(79, 70, 229, 0.45);
+          background: rgba(79, 70, 229, 0.08);
+          color: #4338ca;
+          font-weight: 600;
+        }
+        .radar-zero-state {
+          min-height: 520px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 10px;
+          padding: 32px;
+          text-align: center;
+          background: radial-gradient(circle at 50% 45%, #ffffff 0%, #f9fafb 100%);
+        }
+        .radar-zero-title {
+          font-size: 16px;
+          font-weight: 700;
+          color: #111827;
+          margin: 0;
+        }
+        .radar-zero-hint {
+          font-size: 13px;
+          color: #6b7280;
+          margin: 0;
+          max-width: 320px;
+          line-height: 1.45;
+        }
+        .radar-zero-btn {
+          margin-top: 6px;
+          padding: 8px 16px;
+          font-size: 13px;
+          font-weight: 600;
+          color: #fff;
+          background: #4f46e5;
+          border: none;
+          border-radius: 8px;
+          cursor: pointer;
+        }
+        .radar-zero-btn:hover { background: #4338ca; }
+
         .radar-top {
           display: flex;
           align-items: center;

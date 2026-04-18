@@ -8,14 +8,6 @@ type Props = {
   contact: Contact;
 };
 
-function splitNameAndContext(input: string): { name: string; context: string } {
-  const trimmed = input.trim();
-  if (!trimmed) return { name: "", context: "" };
-  const match = trimmed.match(/^([^,—–\-]+)\s*[,—–\-]\s*(.+)$/);
-  if (match) return { name: match[1].trim(), context: match[2].trim() };
-  return { name: trimmed, context: "" };
-}
-
 export default function VerificationBanner({ contact }: Props) {
   const router = useRouter();
   const [pending, setPending] = useState<string | null>(null);
@@ -103,16 +95,12 @@ export default function VerificationBanner({ contact }: Props) {
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder={`${contact.name || "Name"} — short note (optional)`}
+          placeholder="Who is this? Name and any clues (title, company, how you know them)"
           disabled={pending !== null}
           style={inputStyle}
           onKeyDown={(e) => {
             if (e.key === "Enter" && canSave && pending === null) {
-              const { name, context } = splitNameAndContext(draft);
-              void call(
-                { action: "rename_and_reenrich", name: name || undefined, context: context || undefined },
-                "save",
-              );
+              void call({ action: "rename_and_reenrich", prompt: trimmed }, "save");
             }
           }}
         />
@@ -120,11 +108,7 @@ export default function VerificationBanner({ contact }: Props) {
           type="button"
           disabled={!canSave || pending !== null}
           onClick={() => {
-            const { name, context } = splitNameAndContext(draft);
-            void call(
-              { action: "rename_and_reenrich", name: name || undefined, context: context || undefined },
-              "save",
-            );
+            void call({ action: "rename_and_reenrich", prompt: trimmed }, "save");
           }}
           style={{
             ...textBtn,

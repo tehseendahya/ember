@@ -17,6 +17,7 @@ import {
   MapPin,
   GitBranch,
   CircleDot,
+  Trash2,
 } from "lucide-react";
 import type { Contact, Interaction, SecondDegreeEdge, SecondDegreeEvidence } from "@/lib/types";
 import { Suspense, useEffect, useState } from "react";
@@ -749,6 +750,7 @@ export default function ContactDetailClient({
   const [repopulating, setRepopulating] = useState(false);
   const [repopulateMessage, setRepopulateMessage] = useState<string | null>(null);
   const [hasRepopulatedSinceEdit, setHasRepopulatedSinceEdit] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [linkedInUrl, setLinkedInUrl] = useState(contact.linkedIn);
   const [bioText, setBioText] = useState(contact.notes);
   const [titleLine, setTitleLine] = useState({ role: contact.role, company: contact.company });
@@ -843,31 +845,91 @@ export default function ContactDetailClient({
     }
   }
 
+  async function deleteContact() {
+    if (
+      !window.confirm(
+        `Delete ${contact.name.trim() || "this contact"}? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/contacts/${contact.id}/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete" }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string; deleted?: boolean };
+      if (!res.ok || data.ok === false) {
+        window.alert(data.error ?? "Could not delete contact.");
+        return;
+      }
+      router.push("/people");
+      router.refresh();
+    } catch {
+      window.alert("Could not delete contact.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="detail-container" style={{ padding: "32px 40px", maxWidth: "1200px" }}>
-      {/* Back button */}
-      <Link
-        href="/people"
+      <div
         style={{
-          display: "inline-flex",
+          display: "flex",
           alignItems: "center",
-          gap: "8px",
-          color: "#9ca3af",
-          textDecoration: "none",
-          fontSize: "14px",
+          justifyContent: "space-between",
+          gap: "16px",
+          flexWrap: "wrap",
           marginBottom: "28px",
-          transition: "color 0.15s",
-        }}
-        onMouseEnter={(e) => {
-          (e.currentTarget as HTMLElement).style.color = "#111827";
-        }}
-        onMouseLeave={(e) => {
-          (e.currentTarget as HTMLElement).style.color = "#9ca3af";
         }}
       >
-        <ArrowLeft size={16} />
-        Back to People
-      </Link>
+        <Link
+          href="/people"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            color: "#9ca3af",
+            textDecoration: "none",
+            fontSize: "14px",
+            transition: "color 0.15s",
+          }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLElement).style.color = "#111827";
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLElement).style.color = "#9ca3af";
+          }}
+        >
+          <ArrowLeft size={16} />
+          Back to People
+        </Link>
+        <button
+          type="button"
+          onClick={() => { void deleteContact(); }}
+          disabled={deleting}
+          aria-label="Delete contact"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "6px",
+            fontSize: "13px",
+            fontWeight: 600,
+            color: deleting ? "#9ca3af" : "#b91c1c",
+            background: "transparent",
+            border: "1px solid rgba(185, 28, 28, 0.35)",
+            borderRadius: "8px",
+            padding: "8px 12px",
+            cursor: deleting ? "wait" : "pointer",
+          }}
+        >
+          <Trash2 size={15} />
+          {deleting ? "Deleting…" : "Delete contact"}
+        </button>
+      </div>
 
       <Suspense fallback={null}>
         <IntroFromSearchBannerInner />

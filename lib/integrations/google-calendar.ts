@@ -592,6 +592,14 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
   let processedEvents = 0;
 
   const { enrichContactFromWeb } = await import("@/lib/integrations/enrich-contact-from-web");
+  const { getProfileContext } = await import("@/lib/data");
+  const { compactProfileContext } = await import("@/lib/profile-context");
+  let ownerProfileContext = "";
+  try {
+    ownerProfileContext = compactProfileContext(await getProfileContext(), 900);
+  } catch {
+    ownerProfileContext = "";
+  }
 
   for (const event of events) {
     const date = eventDate(event);
@@ -668,11 +676,15 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
 
         let enriched: Awaited<ReturnType<typeof enrichContactFromWeb>> | null = null;
         if (wantsEnrichment) {
+          const meetingLine = `Synced from calendar meeting: ${title}. Tags: google-calendar.`;
+          const ownerLine = ownerProfileContext
+            ? `Meeting owner professional context (infer likely attendee roles/industries common in their network; do not treat as facts about this person): ${ownerProfileContext}`
+            : "";
           enriched = await enrichContactFromWeb({
             name: identity.name,
             email: identity.email,
             companyHint: domainCompany,
-            relationshipContext: `Synced from calendar meeting: ${title}. Tags: google-calendar.`,
+            relationshipContext: [meetingLine, ownerLine].filter(Boolean).join("\n\n"),
             whenNoWebData: {
               role: "",
               company: domainCompany,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Search,
@@ -16,25 +16,24 @@ import {
   MicOff,
 } from "lucide-react";
 import type { Contact, WorldSearchResult } from "@/lib/types";
+import { buildDiscoverSuggestions } from "@/lib/discover-search-suggestions";
 import IntroRequestModal from "@/components/IntroRequestModal";
-
-const exampleSearches = [
-  "fundraising advice",
-  "ML engineer for hire",
-  "intro to Sequoia",
-  "product manager at big tech",
-  "climate tech founder",
-  "design systems expert",
-];
 
 type NetworkHit = { contact: Contact; relevance: number; reason: string };
 type WebkitWindow = Window & {
   webkitSpeechRecognition?: new () => any;
 };
 
-export default function DiscoverClient({ contacts }: { contacts: Contact[] }) {
+export default function DiscoverClient({
+  contacts,
+  profileContext,
+}: {
+  contacts: Contact[];
+  profileContext: string;
+}) {
   const [mode, setMode] = useState<"network" | "world">("network");
   const [query, setQuery] = useState("");
+  const [suggestOpen, setSuggestOpen] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +47,16 @@ export default function DiscoverClient({ contacts }: { contacts: Contact[] }) {
   const [networkResults, setNetworkResults] = useState<NetworkHit[]>([]);
   const [worldResults, setWorldResults] = useState<WorldSearchResult[]>([]);
   const [introModalResult, setIntroModalResult] = useState<WorldSearchResult | null>(null);
+
+  const suggestionLists = useMemo(() => buildDiscoverSuggestions(profileContext), [profileContext]);
+
+  const filteredSuggestions = useMemo(() => {
+    const list = mode === "network" ? suggestionLists.network : suggestionLists.world;
+    const q = query.trim().toLowerCase();
+    if (!q) return list.slice(0, 10);
+    const hit = list.filter((s) => s.toLowerCase().includes(q));
+    return hit.length > 0 ? hit.slice(0, 10) : [];
+  }, [mode, query, suggestionLists]);
 
   const getIntroducerNames = (ids: string[] | undefined) =>
     (ids ?? [])
@@ -109,9 +118,10 @@ export default function DiscoverClient({ contacts }: { contacts: Contact[] }) {
     void runSearch(query);
   };
 
-  const handleExampleClick = (example: string) => {
-    setQuery(example);
-    void runSearch(example);
+  const applySuggestion = (text: string) => {
+    setQuery(text);
+    setSuggestOpen(false);
+    void runSearch(text);
   };
 
   const worldWithIntros = worldResults.filter((r) => r.introducers && r.introducers.length > 0);
@@ -225,6 +235,7 @@ export default function DiscoverClient({ contacts }: { contacts: Contact[] }) {
               setHasSearched(false);
               setError(null);
               setNotice(null);
+              setSuggestOpen(false);
             }}
             style={{
               display: "flex",
@@ -258,6 +269,7 @@ export default function DiscoverClient({ contacts }: { contacts: Contact[] }) {
               transform: "translateY(-50%)",
               color: "#9ca3af",
               pointerEvents: "none",
+              zIndex: 1,
             }}
           />
           <input
@@ -267,6 +279,9 @@ export default function DiscoverClient({ contacts }: { contacts: Contact[] }) {
             placeholder={
               mode === "network" ? "Find the best person for..." : "Search the web for people..."
             }
+            autoComplete="off"
+            aria-expanded={suggestOpen}
+            aria-controls="discover-search-suggestions"
             style={{
               width: "100%",
               padding: "14px 120px 14px 46px",
@@ -278,13 +293,22 @@ export default function DiscoverClient({ contacts }: { contacts: Contact[] }) {
               outline: "none",
               transition: "border-color 0.15s",
             }}
+            onClick={() => setSuggestOpen(true)}
             onFocus={(e) => {
+              setSuggestOpen(true);
               e.currentTarget.style.borderColor = "#4f46e5";
               e.currentTarget.style.boxShadow = "0 0 0 3px rgba(79, 70, 229, 0.1)";
             }}
             onBlur={(e) => {
               e.currentTarget.style.borderColor = "#e5e7eb";
               e.currentTarget.style.boxShadow = "none";
+              window.setTimeout(() => setSuggestOpen(false), 180);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setSuggestOpen(false);
+                (e.target as HTMLInputElement).blur();
+              }
             }}
           />
           <button
@@ -337,6 +361,78 @@ export default function DiscoverClient({ contacts }: { contacts: Contact[] }) {
           >
             {loading ? "…" : "Search"}
           </button>
+
+          {suggestOpen && (
+            <div
+              id="discover-search-suggestions"
+              role="listbox"
+              aria-label={mode === "network" ? "Suggested searches in your network" : "Suggested web searches"}
+              style={{
+                position: "absolute",
+                left: 0,
+                right: 0,
+                top: "calc(100% + 6px)",
+                zIndex: 40,
+                background: "#ffffff",
+                border: "1px solid #e5e7eb",
+                borderRadius: "12px",
+                boxShadow: "0 10px 40px rgba(15, 23, 42, 0.12)",
+                maxHeight: "min(320px, 50vh)",
+                overflowY: "auto",
+                padding: "6px 0",
+              }}
+            >
+              <div
+                style={{
+                  padding: "8px 14px 6px",
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  letterSpacing: "0.04em",
+                  textTransform: "uppercase",
+                  color: "#9ca3af",
+                }}
+              >
+                {mode === "network" ? "Suggestions — my network" : "Suggestions — the web"}
+              </div>
+              {filteredSuggestions.length === 0 ? (
+                <div style={{ padding: "12px 14px 14px", fontSize: "13px", color: "#6b7280", lineHeight: 1.45 }}>
+                  No suggestions match &quot;{query.trim()}&quot;. Press Search to run your query anyway.
+                </div>
+              ) : (
+                filteredSuggestions.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    role="option"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applySuggestion(s);
+                    }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      padding: "10px 14px",
+                      border: "none",
+                      background: "transparent",
+                      fontSize: "14px",
+                      color: "#111827",
+                      cursor: "pointer",
+                      lineHeight: 1.35,
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = "#f3f4f6";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = "transparent";
+                    }}
+                  >
+                    {s}
+                  </button>
+                ))
+              )}
+            </div>
+          )}
         </div>
         {voiceError && (
           <div style={{ marginTop: "8px", fontSize: "12px", color: "#dc2626" }}>
@@ -345,50 +441,10 @@ export default function DiscoverClient({ contacts }: { contacts: Contact[] }) {
         )}
       </form>
 
-      {!hasSearched && (
-        <div style={{ marginBottom: "32px" }}>
-          <div
-            style={{
-              fontSize: "13px",
-              fontWeight: "600",
-              color: "#9ca3af",
-              textTransform: "uppercase",
-              letterSpacing: "0.05em",
-              marginBottom: "12px",
-            }}
-          >
-            Try searching for
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-            {exampleSearches.map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => handleExampleClick(s)}
-                style={{
-                  padding: "8px 14px",
-                  background: "rgba(79, 70, 229, 0.04)",
-                  border: "1px solid rgba(79, 70, 229, 0.1)",
-                  borderRadius: "20px",
-                  color: "#4f46e5",
-                  fontSize: "13px",
-                  cursor: "pointer",
-                  transition: "all 0.15s ease",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "rgba(79, 70, 229, 0.08)";
-                  e.currentTarget.style.borderColor = "rgba(79, 70, 229, 0.2)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "rgba(79, 70, 229, 0.04)";
-                  e.currentTarget.style.borderColor = "rgba(79, 70, 229, 0.1)";
-                }}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-        </div>
+      {!hasSearched && !suggestOpen && (
+        <p style={{ fontSize: "13px", color: "#9ca3af", marginBottom: "24px", marginTop: "-12px" }}>
+          Click the search field for tailored suggestions{profileContext.trim() ? " (using your profile context)" : ""}.
+        </p>
       )}
 
       {notice && hasSearched && (

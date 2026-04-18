@@ -4,6 +4,9 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { requireUserId } from "@/lib/auth";
 import { enrichContactFromWeb } from "@/lib/integrations/enrich-contact-from-web";
 import { companyFromWorkEmailDomain } from "@/lib/integrations/calendar-identity-resolver";
+import { parseVerificationInput } from "@/lib/integrations/parse-verification-input";
+import { getProfileContext } from "@/lib/data";
+import { compactProfileContext } from "@/lib/profile-context";
 
 type VerifyAction =
   | { action: "confirm" } // user says "this profile is correct, stop bugging me"
@@ -11,12 +14,13 @@ type VerifyAction =
   | { action: "delete" } // user says "this contact shouldn't exist"
   | { action: "apply_candidate"; candidateIndex: number; context?: string } // pick one of the stored candidates; optional clarifying context
   | {
-      // User types either a corrected name, a free-form clarification
-      // (e.g. "Ryan Johnson, founder of Majente"), or both. At least one is
-      // required. The clarification is treated as authoritative disambiguation
-      // context by the enricher + LLM, which meaningfully improves accuracy
-      // for common names where we can't pin down the right person otherwise.
+      /**
+       * Prefer `prompt`: one free-form line; the server uses an LLM to split
+       * display name vs supporting context (so the whole sentence is not stored as name).
+       * Legacy: `name` / `context` are still accepted and merged if `prompt` is absent.
+       */
       action: "rename_and_reenrich";
+      prompt?: string;
       name?: string;
       context?: string;
     };
@@ -130,21 +134,38 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     }
 
     if (body.action === "rename_and_reenrich") {
-      const providedName = body.name?.trim() ?? "";
-      const context = body.context?.trim() ?? "";
-      // At least one signal is required — either a corrected name or a
-      // clarifying note about who this person is.
-      if (!providedName && !context) {
+      const prompt = body.prompt?.trim() ?? "";
+      const legacyName = body.name?.trim() ?? "";
+      const legacyContext = body.context?.trim() ?? "";
+      const combined =
+        prompt ||
+        (legacyName && legacyContext
+          ? `${legacyName} — ${legacyContext}`
+          : legacyName || legacyContext);
+      if (!combined) {
         return NextResponse.json(
           { ok: false, error: "provide a corrected name, a clarification, or both" },
           { status: 400 },
         );
       }
 
-      const name = providedName || contact.name;
+      const placeholder = String(contact.name ?? "").trim();
+      let ownerProfileForParse = "";
+      try {
+        ownerProfileForParse = compactProfileContext(await getProfileContext(), 500);
+      } catch {
+        ownerProfileForParse = "";
+      }
+      const { name: parsedName, context: parsedContext } = await parseVerificationInput(
+        combined,
+        placeholder,
+        ownerProfileForParse || undefined,
+      );
+      const name = parsedName.trim() || placeholder || combined;
+      const context = parsedContext.trim();
       const companyHint = companyFromWorkEmailDomain(contact.email ?? "") || (contact.company ?? "");
       const relationshipContext = [
-        providedName && providedName !== contact.name ? `User corrected the name.` : "",
+        name && name !== placeholder ? `User corrected or clarified the name.` : "",
         context ? `User-provided context: ${context}` : "",
         `Email: ${contact.email ?? "(none)"}.`,
       ]
@@ -161,10 +182,8 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
           company: contact.company ?? "",
           notes: contact.notes ?? "",
         },
-        // Strict match stays on when only the name was corrected. When the
-        // user supplied clarifying context, enrichContactFromWeb internally
-        // relaxes to "user-vouched" mode and boosts hits that corroborate
-        // the hint tokens.
+        // When the user supplied clarifying context, enrichContactFromWeb internally
+        // relaxes strict matching ("user-vouched" mode).
         strictMatch: true,
         userHint: context || undefined,
       });

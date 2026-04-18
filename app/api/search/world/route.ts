@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getContacts, getSecondDegreeEdges } from "@/lib/data";
+import { getContacts, getProfileContext, getSecondDegreeEdges } from "@/lib/data";
+import { compactProfileContext } from "@/lib/profile-context";
 import type { WorldSearchResult } from "@/lib/types";
 import { enrichWorldResultsWithIntroducers } from "@/lib/network/ranking";
 import { colorFromString, initialsFromName } from "@/lib/search/avatar";
@@ -121,6 +122,13 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  let profileBlurb = "";
+  try {
+    profileBlurb = compactProfileContext(await getProfileContext(), 700);
+  } catch {
+    profileBlurb = "";
+  }
+
   const compact = hits.map((hit, resultIndex) => ({
     resultIndex,
     title: hit.title ?? "",
@@ -130,13 +138,15 @@ export async function POST(req: NextRequest) {
 
   const systemPrompt = `You help format web search hits into a CRM "discover people" list. You must ONLY use facts supported by each result's title and excerpt. If role or company is unclear, use "Unknown" or a short best-effort label from the excerpt. Do not invent employers or bios.
 
+When the query is ambiguous, you may use the optional "CRM owner profile" only to interpret what kind of people the user likely wants — still ground every person field in the excerpts/titles.
+
 Respond with JSON only:
 {"people":[{"resultIndex":0,"name":"...","role":"...","company":"...","relevance":0-100,"reason":"one short sentence why they match the user's query"}]}
 
 Include at most ${hits.length} people. Use each resultIndex at most once. Skip weak matches. relevance should reflect fit to the user's query.`;
 
   const userPrompt = `User query: ${query}
-
+${profileBlurb ? `\nCRM owner profile (intent only; do not fabricate facts about results):\n${profileBlurb}\n` : ""}
 Search results (JSON):
 ${JSON.stringify(compact, null, 0)}`;
 
