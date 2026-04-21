@@ -11,6 +11,18 @@ import {
   type ResolvedIdentity,
 } from "@/lib/integrations/calendar-identity-resolver";
 import { lookupContactsByEmail } from "@/lib/integrations/google-people-api";
+import {
+  fetchGoogleGetWithRetry,
+  throwIfCalendarErrorResponse,
+  GoogleCalendarHttpError,
+  GoogleOAuthTokenError,
+  throwIfOAuthCodeExchangeFailed,
+  throwIfOAuthRefreshFailed,
+  type GoogleIntegrationErrorCode,
+} from "@/lib/integrations/google-api-errors";
+import { recomputeAllConnectionStrengthsForUser } from "@/lib/data/store/supabase-store";
+
+export type { GoogleIntegrationErrorCode } from "@/lib/integrations/google-api-errors";
 
 const GOOGLE_AUTH_BASE = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -107,6 +119,8 @@ export interface GoogleIntegrationStatus {
 export interface CalendarSyncResult {
   ok: boolean;
   reason?: string;
+  /** Set when ok is false — drives HTTP status on the sync API route. */
+  errorCode?: GoogleIntegrationErrorCode;
   processedEvents: number;
   skippedEvents: number;
   fetchedEvents: number;
@@ -174,6 +188,11 @@ async function readToken(userId: string): Promise<StoredGoogleToken | null> {
     tokenType: data.token_type ?? undefined,
     updatedAt: data.updated_at,
   };
+}
+
+async function deleteGoogleCalendarToken(userId: string): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  await supabase.from("google_calendar_tokens").delete().eq("user_id", userId);
 }
 
 async function writeToken(
@@ -250,20 +269,19 @@ async function exchangeCodeForToken(code: string, userId: string): Promise<Store
     body: params.toString(),
     cache: "no-store",
   });
+  const body = await res.text();
   if (!res.ok) {
-    const details = await res.text();
-    throw new Error(`Google token exchange failed: ${details}`);
+    throwIfOAuthCodeExchangeFailed(res, body);
   }
-  const token = (await res.json()) as GoogleTokenPayload;
+  const token = JSON.parse(body) as GoogleTokenPayload;
   return writeToken(userId, token, await readToken(userId));
 }
 
-async function refreshAccessTokenIfNeeded(token: StoredGoogleToken, userId: string): Promise<StoredGoogleToken> {
-  const skewMs = 60 * 1000;
-  if (token.expiresAt > Date.now() + skewMs) return token;
-  if (!token.refreshToken) {
-    throw new Error("Google refresh token is missing. Reconnect integration with offline access.");
-  }
+async function performRefreshRequest(
+  refreshToken: string,
+  userId: string,
+  previous: StoredGoogleToken,
+): Promise<StoredGoogleToken> {
   const clientId = getRequiredEnv("GOOGLE_CLIENT_ID");
   const clientSecret = getRequiredEnv("GOOGLE_CLIENT_SECRET");
   if (!clientId || !clientSecret) {
@@ -272,7 +290,7 @@ async function refreshAccessTokenIfNeeded(token: StoredGoogleToken, userId: stri
   const params = new URLSearchParams({
     client_id: clientId,
     client_secret: clientSecret,
-    refresh_token: token.refreshToken,
+    refresh_token: refreshToken,
     grant_type: "refresh_token",
   });
   const res = await fetch(GOOGLE_TOKEN_URL, {
@@ -281,12 +299,36 @@ async function refreshAccessTokenIfNeeded(token: StoredGoogleToken, userId: stri
     body: params.toString(),
     cache: "no-store",
   });
+  const body = await res.text();
   if (!res.ok) {
-    const details = await res.text();
-    throw new Error(`Google token refresh failed: ${details}`);
+    throwIfOAuthRefreshFailed(res, body);
   }
-  const refreshed = (await res.json()) as GoogleTokenPayload;
-  return writeToken(userId, refreshed, token);
+  const refreshed = JSON.parse(body) as GoogleTokenPayload;
+  return writeToken(userId, refreshed, previous);
+}
+
+/**
+ * Always uses the refresh token to obtain a new access token. On `invalid_grant`,
+ * clears stored tokens so the UI shows disconnected until the user reconnects.
+ */
+async function refreshAccessTokenAlways(token: StoredGoogleToken, userId: string): Promise<StoredGoogleToken> {
+  if (!token.refreshToken) {
+    throw new Error("Google refresh token is missing. Reconnect integration with offline access.");
+  }
+  try {
+    return await performRefreshRequest(token.refreshToken, userId, token);
+  } catch (e) {
+    if (e instanceof GoogleOAuthTokenError && e.shouldClearStoredToken) {
+      await deleteGoogleCalendarToken(userId);
+    }
+    throw e;
+  }
+}
+
+async function refreshAccessTokenIfNeeded(token: StoredGoogleToken, userId: string): Promise<StoredGoogleToken> {
+  const skewMs = 60 * 1000;
+  if (token.expiresAt > Date.now() + skewMs) return token;
+  return refreshAccessTokenAlways(token, userId);
 }
 
 async function getUsableAccessToken(userId: string): Promise<StoredGoogleToken> {
@@ -318,20 +360,44 @@ async function fetchPrimaryCalendarEvents(
     eventsUrl.searchParams.set("timeMax", timeMaxIso);
     eventsUrl.searchParams.set("maxResults", String(SYNC_PAGE_SIZE));
     if (pageToken) eventsUrl.searchParams.set("pageToken", pageToken);
-    const res = await fetch(eventsUrl.toString(), {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      throw new Error(await res.text());
-    }
-    const payload = (await res.json()) as { items?: GoogleCalendarEvent[]; nextPageToken?: string };
+    const res = await fetchGoogleGetWithRetry(
+      eventsUrl.toString(),
+      { Authorization: `Bearer ${accessToken}` },
+      { label: `GCal sync page ${pages}`, maxAttempts: 5 },
+    );
+    const body = await res.text();
+    throwIfCalendarErrorResponse(res, body);
+    const payload = JSON.parse(body) as { items?: GoogleCalendarEvent[]; nextPageToken?: string };
     const batch = (payload.items ?? []).filter((e) => e.status !== "cancelled");
     events.push(...batch);
     pageToken = payload.nextPageToken;
     gCalSyncLog(`page ${pages}: +${batch.length} events (total so far ${events.length})${pageToken ? ", next page…" : ""}`);
   } while (pageToken);
   return { events, pages };
+}
+
+/** If the access token was rejected (401), refresh once and retry the full read. */
+async function fetchPrimaryCalendarEventsWith401Recovery(
+  userId: string,
+  token: StoredGoogleToken,
+  timeMinIso: string,
+  timeMaxIso: string,
+): Promise<{ events: GoogleCalendarEvent[]; pages: number; token: StoredGoogleToken }> {
+  let current = token;
+  for (let round = 0; round < 2; round++) {
+    try {
+      const { events, pages } = await fetchPrimaryCalendarEvents(current.accessToken, timeMinIso, timeMaxIso);
+      return { events, pages, token: current };
+    } catch (e) {
+      if (e instanceof GoogleCalendarHttpError && e.status === 401 && round === 0 && current.refreshToken) {
+        console.warn("[GCal sync] Calendar API returned 401; refreshing access token and retrying fetch.");
+        current = await refreshAccessTokenAlways(current, userId);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error("Google Calendar fetch failed after retry.");
 }
 
 function eventDate(event: GoogleCalendarEvent): string | null {
@@ -455,7 +521,7 @@ export async function fetchCalendarEventsForCurrentUser(
     return null;
   }
   try {
-    const { events } = await fetchPrimaryCalendarEvents(token.accessToken, timeMinIso, timeMaxIso);
+    const { events } = await fetchPrimaryCalendarEventsWith401Recovery(userId, token, timeMinIso, timeMaxIso);
     return events;
   } catch {
     return null;
@@ -474,6 +540,34 @@ export async function getCalendarAccessTokenForCurrentUser(): Promise<string | n
   }
 }
 
+function calendarSyncFailure(
+  err: unknown,
+  zero: Omit<CalendarSyncResult, "ok" | "reason" | "errorCode">,
+): CalendarSyncResult {
+  if (err instanceof GoogleCalendarHttpError) {
+    return {
+      ok: false,
+      reason: err.message,
+      errorCode: err.classified.code,
+      ...zero,
+    };
+  }
+  if (err instanceof GoogleOAuthTokenError) {
+    return {
+      ok: false,
+      reason: err.message,
+      errorCode: err.userFacingCode,
+      ...zero,
+    };
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  let errorCode: GoogleIntegrationErrorCode = "unknown";
+  if (msg.includes("not connected")) errorCode = "not_connected";
+  else if (msg.includes("refresh token is missing")) errorCode = "oauth_refresh";
+  else if (msg.includes("OAuth config") || msg.includes("OAuth client")) errorCode = "missing_config";
+  return { ok: false, reason: msg, errorCode, ...zero };
+}
+
 export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResult> {
   const missingConfig = getMissingConfig();
   const zeroResult = {
@@ -485,7 +579,12 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
     purgedLegacyReminders: 0,
   };
   if (missingConfig.length > 0) {
-    return { ok: false, reason: `Missing config: ${missingConfig.join(", ")}`, ...zeroResult };
+    return {
+      ok: false,
+      reason: `Missing config: ${missingConfig.join(", ")}`,
+      errorCode: "missing_config",
+      ...zeroResult,
+    };
   }
 
   const userId = await requireUserId();
@@ -493,7 +592,7 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
   try {
     token = await getUsableAccessToken(userId);
   } catch (err) {
-    return { ok: false, reason: String(err), ...zeroResult };
+    return calendarSyncFailure(err, zeroResult);
   }
 
   const now = new Date();
@@ -508,16 +607,14 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
 
   let events: GoogleCalendarEvent[];
   let pageCount: number;
+  let tokenForPeople: StoredGoogleToken;
   try {
-    const fetched = await fetchPrimaryCalendarEvents(token.accessToken, timeMin, timeMax);
+    const fetched = await fetchPrimaryCalendarEventsWith401Recovery(userId, token, timeMin, timeMax);
     events = fetched.events;
     pageCount = fetched.pages;
+    tokenForPeople = fetched.token;
   } catch (err) {
-    return {
-      ok: false,
-      reason: `Google Calendar read failed: ${err instanceof Error ? err.message : String(err)}`,
-      ...zeroResult,
-    };
+    return calendarSyncFailure(err, zeroResult);
   }
 
   console.log(
@@ -529,7 +626,7 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
   // name for the person (e.g. "Alexander Kvamme" rather than "Alex" or
   // "apfk88"). We do this ONCE per sync, not per event, to keep API calls low.
   const contactsHints = new Map<string, GoogleContactsHint>();
-  if (tokenHasPeopleApiScope(token)) {
+  if (tokenHasPeopleApiScope(tokenForPeople)) {
     const uniqueEmails = new Set<string>();
     for (const event of events) {
       for (const a of event.attendees ?? []) {
@@ -539,7 +636,7 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
       }
     }
     try {
-      const matches = await lookupContactsByEmail(token.accessToken, uniqueEmails);
+      const matches = await lookupContactsByEmail(tokenForPeople.accessToken, uniqueEmails);
       for (const [email, match] of matches.entries()) {
         contactsHints.set(email, {
           displayName: match.displayName,
@@ -847,6 +944,12 @@ export async function syncRecentGoogleCalendarEvents(): Promise<CalendarSyncResu
   console.log(
     `[GCal sync] Summary: fetched=${events.length}, processed=${processedEvents}, skipped=${skippedEvents}, contacts=${createdContacts} (review=${flaggedForReview}), legacyRemindersPurged=${legacyPurged}`,
   );
+
+  try {
+    await recomputeAllConnectionStrengthsForUser(userId);
+  } catch (e) {
+    console.warn("[GCal sync] Connection strength recompute failed:", e instanceof Error ? e.message : e);
+  }
 
   return {
     ok: true,

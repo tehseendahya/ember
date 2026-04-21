@@ -1154,23 +1154,28 @@ export default function ContactDetailClient({
                 </span>
               ))}
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ fontSize: "12px", color: "#9ca3af" }}>Connection strength:</span>
-              <div style={{ display: "flex", gap: "4px" }}>
-                {[1, 2, 3, 4, 5].map((dot) => (
-                  <div
-                    key={dot}
-                    style={{
-                      width: "8px",
-                      height: "8px",
-                      borderRadius: "50%",
-                      background:
-                        dot <= contact.connectionStrength ? borderColor : "#e5e7eb",
-                      boxShadow: dot <= contact.connectionStrength ? `0 0 4px ${borderColor}60` : "none",
-                    }}
-                  />
-                ))}
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "12px", color: "#9ca3af" }}>Connection strength:</span>
+                <div style={{ display: "flex", gap: "4px" }}>
+                  {[1, 2, 3, 4, 5].map((dot) => (
+                    <div
+                      key={dot}
+                      style={{
+                        width: "8px",
+                        height: "8px",
+                        borderRadius: "50%",
+                        background:
+                          dot <= contact.connectionStrength ? borderColor : "#e5e7eb",
+                        boxShadow: dot <= contact.connectionStrength ? `0 0 4px ${borderColor}60` : "none",
+                      }}
+                    />
+                  ))}
+                </div>
               </div>
+              <span style={{ fontSize: "11px", color: "#b4b4b4", maxWidth: "220px", textAlign: "right", lineHeight: 1.35 }}>
+                From interaction frequency (last ~6 months); fades if you have not talked recently.
+              </span>
             </div>
           </div>
         </div>

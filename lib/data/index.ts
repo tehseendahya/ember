@@ -39,6 +39,8 @@ export {
   getReachOutRecommendation,
   getSecondDegreeEdges,
   getRecentUpdates,
+  persistConnectionStrengthsForContacts,
+  recomputeAllConnectionStrengthsForUser,
   scheduleReminder,
   setProfileContext,
   setReachOutRecommendation,

@@ -5,6 +5,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { requireUserId } from "@/lib/auth";
 import { enrichContactFromWeb, shouldUpgradeNameToResolved } from "@/lib/integrations/enrich-contact-from-web";
 import { companyFromEmailDomain } from "@/lib/integrations/google-calendar";
+import { persistConnectionStrengthsForContacts } from "@/lib/data/store/supabase-store";
 
 export const maxDuration = 120;
 
@@ -142,6 +143,7 @@ export async function POST(req: NextRequest) {
     const existing = await loadExistingIndex(supabase, userId);
 
     const results: ResultRow[] = [];
+    const createdContactIds: string[] = [];
 
     // Sequential is fine for small batches; the expensive path is enrichContactFromWeb
     // (Exa + OpenAI). Batches are capped client-side, so this stays responsive.
@@ -242,9 +244,13 @@ export async function POST(req: NextRequest) {
       existing.nameCompany.add(`${finalName.trim().toLowerCase()}|${finalCompany.trim().toLowerCase()}`);
 
       results.push({ name: finalName, status: "created", contactId: id, enriched });
+      createdContactIds.push(id);
     }
 
     const anyCreated = results.some((r) => r.status === "created");
+    if (createdContactIds.length > 0) {
+      await persistConnectionStrengthsForContacts(userId, createdContactIds);
+    }
     if (anyCreated) {
       revalidatePath("/people");
     }

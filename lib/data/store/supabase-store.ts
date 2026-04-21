@@ -4,6 +4,7 @@ import type { Contact, ContactSummary, ExtendedProfile, IdentityEvidenceSnapshot
 import { requireUserId } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { enrichContactFromWeb } from "@/lib/integrations/enrich-contact-from-web";
+import { computeConnectionStrength } from "@/lib/connection-strength";
 
 const DRIFT_DAYS = 30;
 
@@ -67,12 +68,65 @@ async function getHydratedContacts(userId: string): Promise<Contact[]> {
     id: c.id, name: c.name, email: c.email ?? "", company: c.company ?? "", role: c.role ?? "", linkedIn: c.linkedin ?? "",
     avatar: c.avatar ?? initials(c.name), avatarColor: c.avatar_color ?? avatarColor(c.name), tags: c.tags ?? [],
     lastContact: { type: c.last_contact_type ?? "message", date: c.last_contact_date ?? todayISO(), description: c.last_contact_description ?? "Added to CRM" },
-    interactions: byId.get(c.id) ?? [], notes: c.notes ?? "", connectionStrength: c.connection_strength ?? 2, mutualConnections: c.mutual_connections ?? [],
+    interactions: byId.get(c.id) ?? [], notes: c.notes ?? "",
+    connectionStrength: computeConnectionStrength(
+      (byId.get(c.id) ?? []).map((i) => i.date),
+      c.last_contact_date ?? todayISO(),
+    ),
+    mutualConnections: c.mutual_connections ?? [],
     needsVerification: Boolean(c.needs_verification),
     verificationReason: c.verification_reason ?? "",
     verificationCandidates: Array.isArray(c.verification_candidates) ? (c.verification_candidates as VerificationCandidate[]) : [],
     identityEvidence: (c.identity_evidence ?? {}) as IdentityEvidenceSnapshot,
   }));
+}
+
+/** Persists derived strength for specific contacts (keeps DB in sync with search / briefings). */
+export async function persistConnectionStrengthsForContacts(userId: string, contactIds: string[]): Promise<void> {
+  const unique = [...new Set(contactIds)].filter(Boolean);
+  if (unique.length === 0) return;
+  const supabase = await createSupabaseServerClient();
+  const [{ data: interactionRows }, { data: contactRows }] = await Promise.all([
+    supabase.from("interactions").select("contact_id, date").eq("user_id", userId).in("contact_id", unique),
+    supabase.from("contacts").select("id, last_contact_date").eq("user_id", userId).in("id", unique),
+  ]);
+  const byContact = new Map<string, string[]>();
+  for (const row of interactionRows ?? []) {
+    const arr = byContact.get(row.contact_id) ?? [];
+    arr.push(row.date);
+    byContact.set(row.contact_id, arr);
+  }
+  const lastContact = new Map((contactRows ?? []).map((c) => [c.id, c.last_contact_date]));
+  await Promise.all(
+    unique.map(async (id) => {
+      const dates = byContact.get(id) ?? [];
+      const lc = lastContact.get(id) ?? todayISO();
+      const s = computeConnectionStrength(dates, lc);
+      await supabase.from("contacts").update({ connection_strength: s }).eq("id", id).eq("user_id", userId);
+    }),
+  );
+}
+
+/** Full recompute for the user (e.g. after calendar sync or bulk import). */
+export async function recomputeAllConnectionStrengthsForUser(userId: string): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { data: contacts } = await supabase.from("contacts").select("id, last_contact_date").eq("user_id", userId);
+  if (!contacts?.length) return;
+  const { data: interactionRows } = await supabase.from("interactions").select("contact_id, date").eq("user_id", userId);
+  const byContact = new Map<string, string[]>();
+  for (const row of interactionRows ?? []) {
+    const arr = byContact.get(row.contact_id) ?? [];
+    arr.push(row.date);
+    byContact.set(row.contact_id, arr);
+  }
+  await Promise.all(
+    contacts.map(async (c) => {
+      const dates = byContact.get(c.id) ?? [];
+      const lc = c.last_contact_date ?? todayISO();
+      const s = computeConnectionStrength(dates, lc);
+      await supabase.from("contacts").update({ connection_strength: s }).eq("id", c.id).eq("user_id", userId);
+    }),
+  );
 }
 
 export async function getContacts() { return getHydratedContacts(await requireUserId()); }
@@ -155,6 +209,9 @@ export async function applyCrmUpdate(payload: ApplyPayload): Promise<{ ok: true;
   const updates = payload.summary ? [payload.summary, ...actions] : (actions.length ? actions : ["CRM updated"]);
   const { error } = await supabase.from("recent_updates").insert({ id: randomUUID(), user_id: userId, timestamp: new Date().toISOString(), input: payload.sourceInput?.trim() || "(update)", actions: updates.slice(0, 12) });
   if (error) return { ok: false, error: error.message };
+  if (contactId) {
+    await persistConnectionStrengthsForContacts(userId, [contactId]);
+  }
   return { ok: true, contactId, actions };
 }
 
@@ -234,6 +291,8 @@ export async function addContactInteraction(input: AddContactInteractionInput): 
     input: `Logged note for ${contact.name}`,
     actions: [`Added ${interactionType}: ${title}`],
   });
+
+  await persistConnectionStrengthsForContacts(userId, [input.contactId]);
 
   return { ok: true };
 }
